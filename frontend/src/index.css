@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-dark-bg text-text-primary font-sans;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-dark-card border border-dark-border rounded-2xl p-6 backdrop-blur-xs;
+  }
+
+  .card-sm {
+    @apply bg-dark-card border border-dark-border rounded-xl p-4 backdrop-blur-xs;
+  }
+
+  .glass {
+    @apply bg-opacity-10 backdrop-blur-lg border border-opacity-20;
+  }
+}

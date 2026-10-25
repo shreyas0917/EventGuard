@@ -1,0 +1,185 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Event {
+  id            String      @id @default(uuid())
+  eventId       String      @unique
+  eventType     String
+  payload       Json
+  status        EventStatus @default(RECEIVED)
+  attemptCount  Int         @default(0)
+  maxAttempts   Int         @default(3)
+  lastError     String?
+  nextRetryAt   DateTime?
+  errorMessage  String?
+  processedAt   DateTime?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  logs EventLog[]
+
+  @@index([status])
+  @@index([createdAt])
+  @@map("events")
+}
+
+model EventLog {
+  id        Int       @id @default(autoincrement())
+  eventId   String
+  status    String
+  message   String?
+  createdAt DateTime  @default(now())
+
+  event Event @relation(fields: [eventId], references: [eventId], onDelete: Cascade)
+
+  @@index([eventId])
+  @@index([createdAt])
+  @@map("event_logs")
+}
+
+model OutboxEvent {
+  id            String         @id @default(uuid())
+  eventId       String         @unique
+  eventType     String
+  payload       Json
+  status        OutboxStatus   @default(PENDING)
+  attemptCount  Int            @default(0)
+  lastError     String?
+  createdAt     DateTime       @default(now())
+  publishedAt   DateTime?
+
+  @@index([status])
+  @@index([createdAt])
+  @@map("outbox_events")
+}
+
+enum EventStatus {
+  RECEIVED
+  PROCESSING
+  COMPLETED
+  FAILED
+  RETRYING
+  DUPLICATE
+}
+
+enum OutboxStatus {
+  PENDING
+  PUBLISHED
+  FAILED
+}
+
+model Wallet {
+  id            String    @id @default(uuid())
+  userId        String    @unique
+  balance       Decimal   @default(0) @db.Decimal(15, 2)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  transactions WalletTransaction[]
+
+  @@index([userId])
+  @@map("wallets")
+}
+
+model WalletTransaction {
+  id            String    @id @default(uuid())
+  walletId      String
+  wallet        Wallet    @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  eventId       String    @unique
+  type          String    // "CREDIT" or "DEBIT"
+  amount        Decimal   @db.Decimal(15, 2)
+  reason        String?
+  status        String    @default("COMPLETED") // "PENDING", "COMPLETED", "FAILED"
+  createdAt     DateTime  @default(now())
+
+  @@index([walletId])
+  @@index([eventId])
+  @@index([createdAt])
+  @@map("wallet_transactions")
+}
+
+model DeadLetterEvent {
+  id            String        @id @default(uuid())
+  eventId       String        @unique
+  eventType     String
+  payload       Json
+  reason        String
+  attemptCount  Int
+  status        DLQStatus     @default(PENDING)
+  failedAt      DateTime
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([status])
+  @@index([failedAt])
+  @@map("dead_letter_events")
+}
+
+enum DLQStatus {
+  PENDING
+  REPLAYING
+  RESOLVED
+}
+
+model Payment {
+  id                  String        @id @default(uuid())
+  razorpayPaymentId   String?       @unique
+  razorpayOrderId     String?
+  orderNumber         String?
+  userId              String?
+  amount              Decimal       @db.Decimal(15, 2)
+  currency            String        @default("INR")
+  status              PaymentStatus @default(PENDING)
+  errorMessage        String?
+  metadata            Json?
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  @@index([razorpayPaymentId])
+  @@index([razorpayOrderId])
+  @@index([status])
+  @@map("payments")
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+  REFUND_FAILED
+}
+
+model WebhookEvent {
+  id             String       @id @default(uuid())
+  razorpayEventId String?     @unique
+  eventType       String
+  paymentId       String?
+  status          WebhookStatus @default(RECEIVED)
+  receivedAt      DateTime     @default(now())
+  processedAt     DateTime?
+  errorMessage    String?
+  rawPayload      Json?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@index([razorpayEventId])
+  @@index([eventType])
+  @@index([status])
+  @@map("webhook_events")
+}
+
+enum WebhookStatus {
+  RECEIVED
+  PROCESSED
+  IGNORED
+  FAILED
+}

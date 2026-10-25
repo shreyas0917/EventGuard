@@ -1,0 +1,12 @@
+# Keep Docker build context portable; image runs npm ci itself
+node_modules
+**/node_modules
+frontend/node_modules
+backend/node_modules
+.git
+dist
+**/dist
+*.md
+memory
+.claude
+frontend/dist
