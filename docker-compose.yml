@@ -49,10 +49,13 @@ services:
     depends_on:
       - zookeeper
     healthcheck:
+      # The probe starts a JVM; on a loaded host that alone can exceed 10 s and mark a
+      # healthy broker unhealthy, which blocks `depends_on: service_healthy` for the backend.
       test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
-      interval: 10s
-      timeout: 10s
+      interval: 15s
+      timeout: 40s
       retries: 10
+      start_period: 60s
     networks:
       - eventguard
 
@@ -92,6 +95,10 @@ services:
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
       RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-60000}
       RATE_LIMIT_MAX_REQUESTS: ${RATE_LIMIT_MAX_REQUESTS:-100}
+      # Dev-only defaults; the backend refuses to start with these in production
+      JWT_SECRET: ${JWT_SECRET:-dev-only-insecure-jwt-secret-change-me-0000}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-dev-admin-key-change-me}
+      AUTH_DEMO_LOGIN: ${AUTH_DEMO_LOGIN:-true}
     ports:
       - "${BACKEND_PORT:-3001}:3001"
     depends_on:

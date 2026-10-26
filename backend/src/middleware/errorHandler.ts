@@ -41,6 +41,23 @@ export function errorHandler(
     error: err.stack,
   });
 
+  // Body-parser errors: malformed JSON or an oversized body are client errors, not 500s
+  const bodyParserType = (err as any).type;
+  if (bodyParserType === "entity.parse.failed") {
+    res.status(400).json({
+      success: false,
+      error: { code: "INVALID_JSON", message: "Request body is not valid JSON" },
+    });
+    return;
+  }
+  if (bodyParserType === "entity.too.large") {
+    res.status(413).json({
+      success: false,
+      error: { code: "PAYLOAD_TOO_LARGE", message: "Request body is too large" },
+    });
+    return;
+  }
+
   // Handle known application errors
   if (err instanceof AppError) {
     res.status(err.statusCode).json({

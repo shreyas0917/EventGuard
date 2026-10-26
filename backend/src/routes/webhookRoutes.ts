@@ -11,6 +11,9 @@ import {
 } from "../services/webhookService.js";
 import { ensurePaymentSuccessEvent } from "../services/paymentService.js";
 import { logger } from "../lib/logger.js";
+import { authenticate, requireRole } from "../middleware/auth.js";
+import { validate } from "../middleware/validate.js";
+import { webhookIdParams, webhookListQuery } from "../validation/schemas.js";
 
 const router = Router();
 
@@ -100,7 +103,9 @@ router.post(
 
       const { webhook, payload } = result;
       const eventType = payload.event;
-      const razorpayEventId = payload.event_id;
+      // The stored record carries the delivery id resolved from X-Razorpay-Event-Id;
+      // live payloads usually have no body event_id.
+      const razorpayEventId: string = webhook.razorpayEventId;
 
       logger.info(`[Razorpay] Signature verified for event: ${razorpayEventId}`);
 
@@ -255,15 +260,20 @@ async function handlePaymentFailed(webhook: any, payload: any): Promise<void> {
  *
  * List recent webhook records
  */
-router.get("/razorpay", async (req: Request, res: Response): Promise<void> => {
+router.get(
+  "/razorpay",
+  authenticate,
+  requireRole("admin"),
+  validate({ query: webhookListQuery }),
+  async (req: Request, res: Response): Promise<void> => {
   try {
-    const { status, limit = "20", offset = "0" } = req.query;
+    const { status, limit, offset } = req.query as unknown as {
+      status?: string;
+      limit: number;
+      offset: number;
+    };
 
-    const result = await listWebhooks(
-      status as string | undefined,
-      parseInt(limit as string, 10),
-      parseInt(offset as string, 10)
-    );
+    const result = await listWebhooks(status, limit, offset);
 
     res.json({
       success: true,
@@ -277,7 +287,8 @@ router.get("/razorpay", async (req: Request, res: Response): Promise<void> => {
       error: "Failed to list webhooks",
     });
   }
-});
+  }
+);
 
 /**
  * GET /api/webhooks/razorpay/:id
@@ -286,6 +297,9 @@ router.get("/razorpay", async (req: Request, res: Response): Promise<void> => {
  */
 router.get(
   "/razorpay/:id",
+  authenticate,
+  requireRole("admin"),
+  validate({ params: webhookIdParams }),
   async (req: Request, res: Response): Promise<void> => {
     try {
       const { id } = req.params;

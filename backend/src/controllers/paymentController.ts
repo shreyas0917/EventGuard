@@ -3,26 +3,19 @@ import {
   createPaymentOrder,
   verifyPaymentSignature,
   fetchPaymentDetails,
+  fetchOrderOwner,
   ensurePaymentSuccessEvent,
 } from "../services/paymentService.js";
 import { getEventByEventId } from "../services/eventService.js";
 import { logger } from "../lib/logger.js";
+import { resolveTargetUser } from "../middleware/auth.js";
 
 export async function handleCreateOrder(req: Request, res: Response): Promise<void> {
   try {
-    const { userId, amount, description } = req.body;
-
-    if (!userId || !amount || !description) {
-      res.status(400).json({
-        error: "Missing required fields: userId, amount, description",
-      });
-      return;
-    }
-
-    if (amount <= 0) {
-      res.status(400).json({ error: "Amount must be positive" });
-      return;
-    }
+    // Body is validated by createOrderBody; the order is owned by the caller
+    const { amount, description } = req.body;
+    const userId = resolveTargetUser(req, res, req.body.userId);
+    if (!userId) return;
 
     // Frontend sends amount in INR, convert to paise for Razorpay
     const amountInPaise = Math.round(amount * 100);
@@ -47,14 +40,10 @@ export async function handleCreateOrder(req: Request, res: Response): Promise<vo
 
 export async function handleVerifyPayment(req: Request, res: Response): Promise<void> {
   try {
-    const { orderId, paymentId, signature, userId } = req.body;
-
-    if (!orderId || !paymentId || !signature || !userId) {
-      res.status(400).json({
-        error: "Missing required fields: orderId, paymentId, signature, userId",
-      });
-      return;
-    }
+    // Body is validated by verifyPaymentBody; the credit always goes to the authenticated caller
+    const { orderId, paymentId, signature } = req.body;
+    const userId = resolveTargetUser(req, res, req.body.userId);
+    if (!userId) return;
 
     // Verify Razorpay signature
     const isSignatureValid = await verifyPaymentSignature({
@@ -68,6 +57,21 @@ export async function handleVerifyPayment(req: Request, res: Response): Promise<
       logger.warn(`[Controller] Invalid signature for order ${orderId}`);
       res.status(400).json({
         error: "Invalid payment signature",
+        verified: false,
+      });
+      return;
+    }
+
+    // The order must belong to the user being credited. Orders record their owner in
+    // notes.userId at creation, so a valid signature for someone else's order is refused.
+    const orderOwner = await fetchOrderOwner(orderId);
+    if (orderOwner !== userId) {
+      logger.warn(`[Controller] Order ${orderId} does not belong to ${userId}`, {
+        requestId: (req as any).requestId,
+      });
+      res.status(403).json({
+        success: false,
+        error: { code: "ORDER_OWNERSHIP_MISMATCH", message: "This order belongs to a different user" },
         verified: false,
       });
       return;

@@ -4,31 +4,8 @@ import { logger } from "../lib/logger.js";
 
 export async function handleCreateEvent(req: Request, res: Response) {
   try {
+    // Shape is enforced by createEventBody (PAYMENT_SUCCESS payloads are checked strictly)
     const { eventId, eventType, payload } = req.body;
-
-    if (!eventId || typeof eventId !== "string" || eventId.trim() === "") {
-      res.status(400).json({
-        error: "Invalid event data",
-        details: "eventId must be a non-empty string",
-      });
-      return;
-    }
-
-    if (!eventType || typeof eventType !== "string" || eventType.trim() === "") {
-      res.status(400).json({
-        error: "Invalid event data",
-        details: "eventType must be a non-empty string",
-      });
-      return;
-    }
-
-    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-      res.status(400).json({
-        error: "Invalid event data",
-        details: "payload must be a JSON object",
-      });
-      return;
-    }
 
     try {
       const event = await createEvent({
@@ -62,15 +39,8 @@ export async function handleCreateEvent(req: Request, res: Response) {
 
 export async function handleGetAllEvents(req: Request, res: Response) {
   try {
-    const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 20;
-
-    if (page < 1 || limit < 1) {
-      res.status(400).json({
-        error: "Invalid pagination parameters",
-      });
-      return;
-    }
+    // Validated and bounded by paginationQuery (page >= 1, 1 <= limit <= 100)
+    const { page, limit } = req.query as unknown as { page: number; limit: number };
 
     const result = await getAllEvents(page, limit);
 

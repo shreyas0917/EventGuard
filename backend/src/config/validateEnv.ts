@@ -1,4 +1,4 @@
-import { config } from "./index.js";
+import { config, KNOWN_JWT_SECRETS } from "./index.js";
 import { logger } from "../lib/logger.js";
 
 interface ValidationResult {
@@ -63,6 +63,30 @@ export function validateEnvironment(): ValidationResult {
 
   if (config.max_retry_delay_ms < config.retry_base_delay_ms) {
     errors.push("MAX_RETRY_DELAY_MS must be >= RETRY_BASE_DELAY_MS");
+  }
+
+  // Authentication
+  if (!config.jwt_secret) {
+    errors.push("JWT_SECRET is required");
+  } else if (config.jwt_secret.length < 32) {
+    errors.push("JWT_SECRET must be at least 32 characters");
+  }
+
+  if (isNaN(config.jwt_ttl_seconds) || config.jwt_ttl_seconds < 60 || config.jwt_ttl_seconds > 86400) {
+    errors.push("JWT_TTL_SECONDS must be between 60 and 86400");
+  }
+
+  if (config.admin_api_key && config.admin_api_key.length < 16) {
+    errors.push("ADMIN_API_KEY must be at least 16 characters");
+  }
+
+  if (config.node_env === "production") {
+    if (KNOWN_JWT_SECRETS.includes(config.jwt_secret)) {
+      errors.push("JWT_SECRET is a publicly known placeholder; set a real secret in production");
+    }
+    if (config.auth_demo_login_enabled) {
+      errors.push("AUTH_DEMO_LOGIN must be false in production (it issues tokens without a user store)");
+    }
   }
 
   return {

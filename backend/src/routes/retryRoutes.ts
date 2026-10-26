@@ -6,6 +6,8 @@ import {
 } from "../services/eventClaimService.js";
 import { logger } from "../lib/logger.js";
 import { prisma } from "../lib/prisma.js";
+import { validate } from "../middleware/validate.js";
+import { eventIdParams } from "../validation/schemas.js";
 
 const router = Router();
 
@@ -61,7 +63,7 @@ router.get("/retrying", async (req: Request, res: Response): Promise<void> => {
 
 // POST /api/events/:eventId/retry
 // Manually retry a failed event
-router.post("/:eventId/retry", async (req: Request, res: Response): Promise<void> => {
+router.post("/:eventId/retry", validate({ params: eventIdParams }), async (req: Request, res: Response): Promise<void> => {
   try {
     const { eventId } = req.params;
 

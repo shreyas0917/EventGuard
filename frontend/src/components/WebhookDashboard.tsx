@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { API_BASE, parseResponseJson } from "../config/api";
+import { authHeaders } from "../config/auth";
 
 interface WebhookEvent {
   id: string;
@@ -20,7 +21,7 @@ export function WebhookDashboard() {
   const fetchWebhooks = async () => {
     try {
       setLoading(true);
-      const response = await fetch(`${API_BASE}/api/webhooks/razorpay?limit=10`);
+      const response = await fetch(`${API_BASE}/api/webhooks/razorpay?limit=10`, { headers: authHeaders("admin") });
       const data = await parseResponseJson(response);
       if (data.success) {
         setWebhooks(data.data || []);

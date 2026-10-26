@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { formatDate } from "../utils/formatters";
 import { API_BASE, parseResponseJson } from "../config/api";
+import { authHeaders } from "../config/auth";
 
 interface IdempotencyStats {
   eventId: string;
@@ -32,7 +33,7 @@ export function IdempotencyDemo() {
       for (let i = 0; i < count; i++) {
         const response = await fetch(`${API_BASE}/api/events`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...authHeaders("admin") },
           body: JSON.stringify({
             eventId,
             eventType,
@@ -80,7 +81,7 @@ export function IdempotencyDemo() {
 
   const fetchStats = async () => {
     try {
-      const eventResponse = await fetch(`${API_BASE}/api/events/${eventId}`);
+      const eventResponse = await fetch(`${API_BASE}/api/events/${eventId}`, { headers: authHeaders("admin") });
       if (!eventResponse.ok) {
         if (eventResponse.status === 404) {
           setError("Event not yet available — async processing may still be in progress.");
@@ -94,7 +95,7 @@ export function IdempotencyDemo() {
       const event = await parseResponseJson(eventResponse);
 
       // Count duplicates from event logs
-      const historyResponse = await fetch(`${API_BASE}/api/events/${eventId}/history`);
+      const historyResponse = await fetch(`${API_BASE}/api/events/${eventId}/history`, { headers: authHeaders("admin") });
       if (!historyResponse.ok) {
         const errData = await parseResponseJson(historyResponse);
         throw new Error(errData.error || "Failed to fetch event history");

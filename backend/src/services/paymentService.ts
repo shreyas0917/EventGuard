@@ -226,7 +226,10 @@ export async function verifyPaymentSignature(request: VerifyPaymentRequest): Pro
       .update(signatureBody)
       .digest("hex");
 
-    const isValid = expectedSignature === request.signature;
+    // Constant-time comparison so response timing does not reveal matching prefixes
+    const expected = Buffer.from(expectedSignature, "hex");
+    const received = Buffer.from(request.signature, "hex");
+    const isValid = expected.length === received.length && crypto.timingSafeEqual(expected, received);
 
     if (isValid) {
       logger.info(`[Payment] Valid signature for order ${request.orderId}`);
@@ -237,6 +240,19 @@ export async function verifyPaymentSignature(request: VerifyPaymentRequest): Pro
     return isValid;
   } catch (error) {
     logger.error("[Payment] Error verifying signature", error);
+    throw error;
+  }
+}
+
+/** The userId recorded in the order's notes when EventGuard created it, or null. */
+export async function fetchOrderOwner(orderId: string): Promise<string | null> {
+  try {
+    const razorpay = getRazorpay();
+    const order: any = await razorpay.orders.fetch(orderId);
+    const owner = order?.notes?.userId;
+    return typeof owner === "string" && owner.length > 0 ? owner : null;
+  } catch (error) {
+    logger.error(`[Payment] Error fetching order ${orderId}`, error);
     throw error;
   }
 }

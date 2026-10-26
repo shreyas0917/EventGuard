@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { WalletOutlined, CheckCircleOutlined, LoadingOutlined } from "@ant-design/icons";
 import axios from "axios";
 import { API_BASE } from "../config/api";
+import { authHeaders } from "../config/auth";
 
 interface WalletData {
   id: string;
@@ -27,10 +28,12 @@ interface RazorpayConfig {
 }
 
 interface PaymentDemoProps {
-  currentUserId?: string;
+  /** The signed-in user; the API derives ownership from the token, not this prop */
+  currentUserId: string;
 }
 
-const PaymentDemo: React.FC<PaymentDemoProps> = ({ currentUserId = "user-123" }) => {
+const PaymentDemo: React.FC<PaymentDemoProps> = ({ currentUserId }) => {
+  const userAuth = () => ({ headers: authHeaders("user") });
   const [loading, setLoading] = useState(false);
   const [creatingWallet, setCreatingWallet] = useState(false);
   const [walletData, setWalletData] = useState<WalletData | null>(null);
@@ -70,10 +73,10 @@ const PaymentDemo: React.FC<PaymentDemoProps> = ({ currentUserId = "user-123" })
 
   const loadWalletData = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/api/wallets/${currentUserId}`);
+      const res = await axios.get(`${API_BASE}/api/wallets/${currentUserId}`, userAuth());
       if (res.data.success) {
         setWalletData(res.data.wallet);
-        const txRes = await axios.get(`${API_BASE}/api/wallets/${currentUserId}/transactions`);
+        const txRes = await axios.get(`${API_BASE}/api/wallets/${currentUserId}/transactions`, userAuth());
         if (txRes.data.success) setWalletTransactions(txRes.data.transactions);
       }
     } catch {
@@ -89,7 +92,7 @@ const PaymentDemo: React.FC<PaymentDemoProps> = ({ currentUserId = "user-123" })
   const createWallet = async () => {
     setCreatingWallet(true);
     try {
-      const res = await axios.post(`${API_BASE}/api/wallets`, { userId: currentUserId });
+      const res = await axios.post(`${API_BASE}/api/wallets`, {}, userAuth());
       if (res.data.success) {
         loadWalletData();
       }
@@ -103,11 +106,14 @@ const PaymentDemo: React.FC<PaymentDemoProps> = ({ currentUserId = "user-123" })
   const createPaymentOrder = async () => {
     setLoading(true);
     try {
-      const res = await axios.post(`${API_BASE}/api/payments/create-order`, {
-        userId: currentUserId,
-        amount: parseFloat(amount),
-        description: description || `Payment of ₹${amount}`,
-      });
+      const res = await axios.post(
+        `${API_BASE}/api/payments/create-order`,
+        {
+          amount: parseFloat(amount),
+          description: description || `Payment of ₹${amount}`,
+        },
+        userAuth()
+      );
       if (res.data.success) {
         // Use the API response directly — React setState is async; do not open checkout on stale orderInfo.
         const newOrder = res.data.order;
@@ -168,12 +174,15 @@ const PaymentDemo: React.FC<PaymentDemoProps> = ({ currentUserId = "user-123" })
       return;
     }
     try {
-      const res = await axios.post(`${API_BASE}/api/payments/verify`, {
-        orderId: order.orderId,
-        paymentId: razorpayResponse.razorpay_payment_id,
-        signature: razorpayResponse.razorpay_signature,
-        userId: currentUserId,
-      });
+      const res = await axios.post(
+        `${API_BASE}/api/payments/verify`,
+        {
+          orderId: order.orderId,
+          paymentId: razorpayResponse.razorpay_payment_id,
+          signature: razorpayResponse.razorpay_signature,
+        },
+        userAuth()
+      );
       if (res.data.success) {
         setPaymentVerification(res.data);
         setTimeout(() => loadWalletData(), 2000);

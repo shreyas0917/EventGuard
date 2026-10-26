@@ -1,7 +1,9 @@
+import { AuthPanel } from "./AuthPanel";
+
 export function Header() {
   return (
     <header className="border-b border-dark-border backdrop-blur-lg bg-dark-bg/80">
-      <div className="container mx-auto px-6 py-8">
+      <div className="container mx-auto px-6 py-8 flex flex-wrap items-end justify-between gap-6">
         <div className="max-w-2xl">
           <h1 className="text-5xl font-bold text-accent-gold mb-2">
             EventGuard
@@ -10,6 +12,7 @@ export function Header() {
             Reliable events. Exactly-once business effects.
           </p>
         </div>
+        <AuthPanel />
       </div>
     </header>
   );

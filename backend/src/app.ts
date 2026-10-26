@@ -11,7 +11,9 @@ import { logger } from "./lib/logger.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { correlationId, requestLogger } from "./middleware/correlation.js";
 import { corsMiddleware, securityHeaders } from "./middleware/security.js";
-import { rateLimit, strictRateLimit, webhookRateLimit } from "./middleware/rateLimiter.js";
+import { rateLimit, strictRateLimit, webhookRateLimit, authRateLimit } from "./middleware/rateLimiter.js";
+import { authenticate, requireRole } from "./middleware/auth.js";
+import authRouter from "./routes/auth.js";
 
 export function createApp() {
   const app = express();
@@ -42,20 +44,25 @@ export function createApp() {
   // Phase 10: General rate limiting for API
   app.use("/api", rateLimit());
 
-  // Health endpoints (no rate limit)
+  // Health endpoints (no rate limit, no auth)
   app.use("/health", healthRouter);
 
-  // API routes with appropriate rate limiting
+  // Access policy
+  //   public:        /health, /api/auth/demo-login, GET /api/payments/config
+  //   HMAC-signed:   POST /api/webhooks/razorpay
+  //   any user:      own wallet, own payment orders and verification
+  //   admin only:    events, retries, outbox, DLQ, webhook history
+  app.use("/api/auth", authRateLimit, authRouter);
+
   // Mount retryRouter before eventsRouter so static paths (/failed, /retrying)
   // are not captured by GET /:eventId
-  app.use("/api/events", retryRouter);
-  app.use("/api/events", eventsRouter);
-  app.use("/api/outbox", outboxRouter);
+  app.use("/api/events", authenticate, requireRole("admin"), retryRouter, eventsRouter);
+  app.use("/api/outbox", authenticate, requireRole("admin"), outboxRouter);
   app.use("/api/payments", paymentsRouter);
-  app.use("/api/wallets", walletsRouter);
+  app.use("/api/wallets", authenticate, walletsRouter);
 
   // DLQ endpoints with strict rate limit (admin operations)
-  app.use("/api/dlq", strictRateLimit, dlqRouter);
+  app.use("/api/dlq", authenticate, requireRole("admin"), strictRateLimit, dlqRouter);
 
   // Webhook endpoint with custom rate limit
   app.use("/api/webhooks", webhookRateLimit, webhookRouter);

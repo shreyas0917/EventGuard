@@ -10,11 +10,15 @@ import {
 import { processEventById } from "../services/eventProcessingService.js";
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
+import { validate } from "../middleware/validate.js";
+import { dlqListQuery, dlqResolveBody, eventIdParams } from "../validation/schemas.js";
 
 const router = Router();
 
+// Admin-only (enforced where the router is mounted in app.ts)
+
 // GET /api/dlq - List all DLQ events
-router.get("/", async (req, res) => {
+router.get("/", validate({ query: dlqListQuery }), async (req, res) => {
   try {
     const { status } = req.query;
     const events = await getDLQEvents(status as string | undefined);
@@ -34,7 +38,7 @@ router.get("/", async (req, res) => {
 });
 
 // GET /api/dlq/:eventId - Get DLQ event details
-router.get("/:eventId", async (req, res) => {
+router.get("/:eventId", validate({ params: eventIdParams }), async (req, res) => {
   try {
     const { eventId } = req.params;
 
@@ -78,7 +82,7 @@ router.get("/:eventId", async (req, res) => {
 });
 
 // POST /api/dlq/:eventId/replay - Replay event from DLQ
-router.post("/:eventId/replay", async (req, res) => {
+router.post("/:eventId/replay", validate({ params: eventIdParams }), async (req, res) => {
   try {
     const { eventId } = req.params;
 
@@ -159,17 +163,10 @@ router.post("/:eventId/replay", async (req, res) => {
 });
 
 // POST /api/dlq/:eventId/resolve - Manual resolve without replay
-router.post("/:eventId/resolve", async (req, res) => {
+router.post("/:eventId/resolve", validate({ params: eventIdParams, body: dlqResolveBody }), async (req, res) => {
   try {
     const { eventId } = req.params;
     const { reason } = req.body;
-
-    if (!reason) {
-      return res.status(400).json({
-        success: false,
-        error: "Resolution reason is required",
-      });
-    }
 
     const dlqEvent = await getDLQEvent(eventId);
 

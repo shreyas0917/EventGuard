@@ -7,21 +7,26 @@ import PaymentDemo from "./components/PaymentDemo";
 import { Header } from "./components/Header";
 import { WebhookDashboard } from "./components/WebhookDashboard";
 import { API_BASE, parseResponseJson } from "./config/api";
+import { authHeaders, useSession } from "./config/auth";
+import { SignInNotice } from "./components/AuthPanel";
 
 export default function App() {
   const [events, setEvents] = useState<any[]>([]);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<"events" | "idempotency" | "payment">("events");
+  const adminSession = useSession("admin");
+  const userSession = useSession("user");
 
   useEffect(() => {
-    fetchEvents();
-  }, [refreshTrigger]);
+    if (adminSession) fetchEvents();
+    else setEvents([]);
+  }, [refreshTrigger, adminSession]);
 
   const fetchEvents = async () => {
     try {
       setLoading(true);
-      const response = await fetch(`${API_BASE}/api/events`);
+      const response = await fetch(`${API_BASE}/api/events`, { headers: authHeaders("admin") });
       const data = await parseResponseJson(response);
       setEvents(data.events || []);
     } catch (error) {
@@ -77,7 +82,10 @@ export default function App() {
         </div>
 
         <div className="space-y-8">
-          {activeTab === "events" && (
+          {activeTab === "events" && !adminSession && (
+            <SignInNotice role="admin" purpose="Creating events and viewing the outbox are admin operations." />
+          )}
+          {activeTab === "events" && adminSession && (
             <>
               <EventCreator onEventCreated={handleEventCreated} />
               <EventList
@@ -89,8 +97,18 @@ export default function App() {
             </>
           )}
 
-          {activeTab === "idempotency" && <IdempotencyDemo />}
-          {activeTab === "payment" && <PaymentDemo />}
+          {activeTab === "idempotency" &&
+            (adminSession ? (
+              <IdempotencyDemo />
+            ) : (
+              <SignInNotice role="admin" purpose="The demo injects duplicate events, which is an admin operation." />
+            ))}
+          {activeTab === "payment" &&
+            (userSession ? (
+              <PaymentDemo key={userSession.userId} currentUserId={userSession.userId} />
+            ) : (
+              <SignInNotice role="user" purpose="Payments are made from your own wallet." />
+            ))}
         </div>
       </main>
     </div>

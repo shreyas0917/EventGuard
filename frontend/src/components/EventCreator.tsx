@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { API_BASE, parseResponseJson } from "../config/api";
+import { authHeaders } from "../config/auth";
 
 interface EventCreatorProps {
   onEventCreated: () => void;
@@ -74,7 +75,7 @@ export function EventCreator({ onEventCreated }: EventCreatorProps) {
 
       const res = await fetch(`${API_BASE}/api/events`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders("admin") },
         body: JSON.stringify({
           eventId,
           eventType,

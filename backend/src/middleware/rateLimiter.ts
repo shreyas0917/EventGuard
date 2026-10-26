@@ -7,7 +7,9 @@ interface RateLimitEntry {
   resetAt: number;
 }
 
-const rateLimitStore = new Map<string, RateLimitEntry>();
+// One store per limiter, so a request counted by the general /api limiter is not
+// also counted against a stricter route limiter that shares the same client key.
+const limiterStores: Map<string, RateLimitEntry>[] = [];
 
 /**
  * Simple in-memory rate limiting middleware
@@ -24,6 +26,8 @@ export function rateLimit(options?: {
   const windowMs = options?.windowMs || config.rate_limit_window_ms;
   const maxRequests = options?.maxRequests || config.rate_limit_max_requests;
   const keyGenerator = options?.keyGenerator || ((req: Request) => req.ip || "unknown");
+  const rateLimitStore = new Map<string, RateLimitEntry>();
+  limiterStores.push(rateLimitStore);
 
   return (req: Request, res: Response, next: NextFunction): void => {
     const key = keyGenerator(req);
@@ -71,6 +75,11 @@ export const strictRateLimit = rateLimit({
   maxRequests: 10, // 10 requests per minute
 });
 
+export const authRateLimit = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  maxRequests: 10, // slows down admin-key guessing on demo login
+});
+
 export const webhookRateLimit = rateLimit({
   windowMs: 60 * 1000, // 1 minute
   maxRequests: 60, // 60 webhooks per minute (allow Razorpay retries)
@@ -82,9 +91,11 @@ export const webhookRateLimit = rateLimit({
  */
 setInterval(() => {
   const now = Date.now();
-  for (const [key, entry] of rateLimitStore.entries()) {
-    if (now > entry.resetAt) {
-      rateLimitStore.delete(key);
+  for (const store of limiterStores) {
+    for (const [key, entry] of store.entries()) {
+      if (now > entry.resetAt) {
+        store.delete(key);
+      }
     }
   }
-}, 60 * 1000); // Clean every minute
+}, 60 * 1000).unref(); // Clean every minute; never keep the process alive

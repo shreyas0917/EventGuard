@@ -1,15 +1,12 @@
 import { Request, Response } from "express";
 import { createWallet, getWallet, getWalletTransactions } from "../services/walletService.js";
 import { logger } from "../lib/logger.js";
+import { resolveTargetUser } from "../middleware/auth.js";
 
 export async function handleCreateWallet(req: Request, res: Response): Promise<void> {
   try {
-    const { userId } = req.body;
-
-    if (!userId) {
-      res.status(400).json({ error: "userId is required" });
-      return;
-    }
+    const userId = resolveTargetUser(req, res, req.body.userId);
+    if (!userId) return;
 
     const wallet = await createWallet(userId);
 

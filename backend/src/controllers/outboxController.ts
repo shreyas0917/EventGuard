@@ -7,15 +7,8 @@ import { logger } from "../lib/logger.js";
 
 export async function handleGetAllOutboxEvents(req: Request, res: Response) {
   try {
-    const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 20;
-
-    if (page < 1 || limit < 1) {
-      res.status(400).json({
-        error: "Invalid pagination parameters",
-      });
-      return;
-    }
+    // Validated and bounded by paginationQuery (page >= 1, 1 <= limit <= 100)
+    const { page, limit } = req.query as unknown as { page: number; limit: number };
 
     const result = await getAllOutboxEvents(page, limit);
 

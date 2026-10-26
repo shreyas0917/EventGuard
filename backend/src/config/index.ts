@@ -41,7 +41,25 @@ export const config = {
 
   // Phase 10: CORS
   cors_origin: process.env.CORS_ORIGIN || "http://localhost:5173",
+
+  // Authentication: HS256 JWT bearer tokens with a "user" or "admin" role
+  jwt_secret: process.env.JWT_SECRET || "",
+  jwt_issuer: process.env.JWT_ISSUER || "eventguard",
+  jwt_audience: process.env.JWT_AUDIENCE || "eventguard-api",
+  jwt_ttl_seconds: parseInt(process.env.JWT_TTL_SECONDS || "3600", 10),
+  // Demo login issues tokens without a user store; on by default only outside production
+  auth_demo_login_enabled:
+    (process.env.AUTH_DEMO_LOGIN ??
+      (process.env.NODE_ENV === "production" ? "false" : "true")) === "true",
+  // Shared secret that demo login requires before it will issue an admin token
+  admin_api_key: process.env.ADMIN_API_KEY || "",
 };
+
+/** Publicly known secrets (docker-compose dev default, .env.example placeholder); rejected in production. */
+export const KNOWN_JWT_SECRETS = [
+  "dev-only-insecure-jwt-secret-change-me-0000",
+  "replace-with-at-least-32-random-characters",
+];
 
 export function validateConfig() {
   if (!config.database_url) {

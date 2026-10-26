@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { formatDate } from "../utils/formatters";
 import { API_BASE, parseResponseJson } from "../config/api";
+import { authHeaders } from "../config/auth";
 
 interface OutboxEvent {
   id: string;
@@ -28,7 +29,7 @@ export function OutboxList({ refreshTrigger }: OutboxListProps) {
   const fetchOutboxEvents = async () => {
     try {
       setLoading(true);
-      const response = await fetch(`${API_BASE}/api/outbox?limit=50`);
+      const response = await fetch(`${API_BASE}/api/outbox?limit=50`, { headers: authHeaders("admin") });
       const data = await parseResponseJson(response);
       setOutboxEvents(data.events || []);
     } catch (error) {
