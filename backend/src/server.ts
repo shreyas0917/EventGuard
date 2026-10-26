@@ -9,6 +9,8 @@ import { logger } from "./lib/logger.js";
 import { startOutboxWorker, stopOutboxWorker } from "./workers/outboxWorker.js";
 import { startRetryWorker, stopRetryWorker } from "./workers/retryWorker.js";
 import { startReconciliationWorker } from "./workers/reconciliationWorker.js";
+import { registerStateGauges } from "./lib/metrics.js";
+import { stateProbes } from "./services/metricsProbes.js";
 import { initializeProducer, disconnectProducer } from "./kafka/producer.js";
 import { ensureTopicExists } from "./kafka/topicSetup.js";
 import { initializeRazorpay, isRazorpayConfigured } from "./lib/razorpay.js";
@@ -74,6 +76,9 @@ async function startup() {
     logger.info("✓ Retry worker started");
 
     startReconciliationWorker(config.reconciliation_interval_ms);
+
+    // Backlog, DLQ, consumer lag and reconciliation gauges are reported by the API only
+    registerStateGauges(stateProbes);
 
     const server = app.listen(config.backend_port, () => {
       logger.info(

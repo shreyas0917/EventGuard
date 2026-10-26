@@ -33,11 +33,11 @@ npx prisma migrate deploy --schema=prisma/schema.prisma
 echo "[start.sh] Prisma migrate deploy completed."
 
 echo "[start.sh] Starting EventGuard API server..."
-npm run dev &
+SERVICE_NAME=eventguard-api npm run dev &
 API_PID=$!
 
 echo "[start.sh] Starting EventGuard Kafka Consumer..."
-npx tsx src/eventConsumer.ts &
+SERVICE_NAME=eventguard-consumer npx tsx src/eventConsumer.ts &
 CONSUMER_PID=$!
 
 echo "[start.sh] API_PID=${API_PID} CONSUMER_PID=${CONSUMER_PID}"

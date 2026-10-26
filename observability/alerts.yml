@@ -1,0 +1,53 @@
+# Alerting rules for the failure modes EventGuard is designed around.
+# Each rule names the first thing to check; see docs/RUNBOOK.md.
+groups:
+  - name: eventguard
+    rules:
+      - alert: DeadLetterQueueNotEmpty
+        expr: max(eventguard_dlq_open) > 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value }} event(s) exhausted their retries and are waiting in the DLQ"
+          action: "Inspect GET /api/dlq, fix the cause, then POST /api/dlq/:eventId/replay"
+
+      - alert: OutboxStalled
+        expr: max(eventguard_outbox_oldest_pending_age_seconds) > 60
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Oldest unpublished outbox row is {{ $value | humanizeDuration }} old"
+          action: "Kafka unreachable or the API's outbox worker is down; check eventguard_outbox_publish_failures_total"
+
+      - alert: ConsumerLagGrowing
+        expr: max(eventguard_consumer_lag) > 1000
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Consumer group is {{ $value }} messages behind"
+          action: "Consumer down or slow; check eventguard_event_processing_duration_seconds and Redis/PostgreSQL latency"
+
+      - alert: RedisLockErrors
+        expr: sum(rate(eventguard_redis_lock_errors_total[5m])) > 0
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "Redis errors during lock acquisition; deliveries are being left uncommitted for redelivery"
+          action: "Check Redis health; processing resumes on its own when Redis recovers"
+
+      - alert: ReconciliationDiscrepancy
+        expr: sum(eventguard_reconciliation_discrepancies) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "Ledger, balances or outbox disagree ({{ $value }} finding(s))"
+          action: "GET /api/admin/reconciliation for details; never auto-correct money"
+
+      - alert: ApiErrorRate
+        expr: |
+          sum(rate(eventguard_http_request_duration_seconds_count{status=~"5.."}[5m]))
+            / clamp_min(sum(rate(eventguard_http_request_duration_seconds_count[5m])), 1e-9) > 0.01
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "More than 1% of API requests are failing with 5xx"
+          action: "Check structured logs by requestId for the failing route"

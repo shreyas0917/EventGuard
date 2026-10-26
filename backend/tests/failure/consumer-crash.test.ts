@@ -70,6 +70,31 @@ afterAll(async () => {
 
 beforeEach(() => db.resetState());
 
+describe("consumer process startup", () => {
+  it("a consumer started before its topic exists creates it instead of crashing", async () => {
+    const missingTopic = `eventguard.failure.missing.${Date.now()}`;
+    const proc = spawnConsumer({
+      KAFKA_TOPIC: missingTopic,
+      KAFKA_CONSUMER_GROUP: `startup-${Date.now()}`,
+      CONSUMER_METRICS_PORT: "9475",
+    });
+    running.push(proc);
+
+    await waitFor(
+      async () => (await fetch("http://localhost:9475/health").then((r) => r.ok).catch(() => false)) as boolean,
+      90_000,
+      `consumer health on a fresh topic. Output:\n${proc.output()}`
+    );
+    expect(proc.child.exitCode).toBeNull();
+
+    proc.child.kill();
+    const admin = getKafka().admin();
+    await admin.connect();
+    await admin.deleteTopics({ topics: [missingTopic] }).catch(() => {});
+    await admin.disconnect();
+  });
+});
+
 describe("consumer process crashes", () => {
   it("crash after the credit commits but before the Kafka offset commit: the redelivery is a no-op", async () => {
     await db.seedWallet("user_crash_after");

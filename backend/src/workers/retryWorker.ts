@@ -1,6 +1,6 @@
 import { getRetryableEvents } from "../services/eventClaimService.js";
 import { processEvent } from "../kafka/eventWorker.js";
-import { logger } from "../lib/logger.js";
+import { logger, withLogContext } from "../lib/logger.js";
 import { config } from "../config/index.js";
 
 let retryWorkerRunning = false;
@@ -29,11 +29,13 @@ export async function runRetryCycle(): Promise<number> {
     );
 
     try {
-      await processEvent({
-        eventId: event.eventId,
-        eventType: event.eventType,
-        payload: event.payload,
-      });
+      await withLogContext({ trigger: "retry-worker" }, () =>
+        processEvent({
+          eventId: event.eventId,
+          eventType: event.eventType,
+          payload: event.payload,
+        })
+      );
     } catch (error) {
       logger.error(`[RetryWorker] Error retrying event ${event.eventId}`, error);
       // Continue with next event even if this one fails

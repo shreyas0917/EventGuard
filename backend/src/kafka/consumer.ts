@@ -1,6 +1,6 @@
-import { Consumer, EachMessagePayload } from "kafkajs";
+import { Consumer, EachBatchPayload, KafkaMessage } from "kafkajs";
 import { getKafka } from "../lib/kafka.js";
-import { logger } from "../lib/logger.js";
+import { logger, withLogContext } from "../lib/logger.js";
 import { config } from "../config/index.js";
 import { processEvent } from "./eventWorker.js";
 
@@ -34,16 +34,52 @@ export async function createEventConsumer(options: EventConsumerOptions = {}): P
   return created;
 }
 
+/**
+ * Consume with bounded concurrency while keeping at-least-once semantics.
+ *
+ * Each event is ~15 sequential Redis/PostgreSQL round trips, so one message at a time
+ * sustained 12 events/s in the load test, against 66 events/s with the defaults below
+ * (same machine and load; docs/PERFORMANCE.md). All partitions are consumed in
+ * parallel, and each partition's batch is processed in concurrent chunks. Offsets
+ * are resolved strictly in order and only up to the first failure: the failed message
+ * and everything after it are redelivered. Re-running a message that had succeeded is
+ * safe, because every effect is idempotent. Events of one batch are independent
+ * entities (the guards are per event), so running them concurrently is sound.
+ */
 export async function runEventConsumer(target: Consumer): Promise<void> {
   await target.run({
-    eachMessage: async (payload: EachMessagePayload) => {
-      try {
-        await handleMessage(payload);
-      } catch (error) {
-        logger.error("[Kafka] Error handling message — rethrowing to avoid offset commit", error);
-        // KafkaJS commits the offset only when eachMessage resolves successfully.
-        // Rethrow so infrastructure failures (e.g. RedisLockError) keep the message eligible for redelivery.
-        throw error;
+    partitionsConsumedConcurrently: config.kafka_partitions_concurrency,
+    eachBatchAutoResolve: false,
+    eachBatch: async ({ batch, resolveOffset, heartbeat, commitOffsetsIfNecessary, isRunning, isStale }: EachBatchPayload) => {
+      const chunkSize = config.kafka_processing_concurrency;
+
+      for (let start = 0; start < batch.messages.length; start += chunkSize) {
+        if (!isRunning() || isStale()) return;
+
+        const chunk = batch.messages.slice(start, start + chunkSize);
+        const results = await Promise.allSettled(
+          chunk.map((message) =>
+            withLogContext(
+              { eventId: message.key?.toString(), partition: batch.partition, offset: message.offset },
+              () => handleMessage({ partition: batch.partition, message })
+            )
+          )
+        );
+
+        for (let i = 0; i < chunk.length; i++) {
+          const result = results[i];
+          if (result.status === "rejected") {
+            // Commit what succeeded before it, then rethrow: KafkaJS redelivers from this
+            // offset, so infrastructure failures (e.g. RedisLockError) are retried, not lost.
+            await commitOffsetsIfNecessary();
+            logger.error("[Kafka] Error handling message — offset left uncommitted for redelivery", result.reason);
+            throw result.reason;
+          }
+          resolveOffset(chunk[i].offset);
+        }
+
+        await heartbeat();
+        await commitOffsetsIfNecessary();
       }
     },
   });
@@ -75,7 +111,7 @@ export async function startConsumer(): Promise<void> {
   logger.info("[Kafka] Consumer started processing messages");
 }
 
-export async function handleMessage(payload: EachMessagePayload): Promise<void> {
+export async function handleMessage(payload: { partition: number; message: KafkaMessage }): Promise<void> {
   const { partition, message } = payload;
 
   if (!message.value || !message.key) {
@@ -102,9 +138,8 @@ export async function handleMessage(payload: EachMessagePayload): Promise<void> 
 
     logger.debug(`[Kafka] Successfully processed event: ${eventId}`);
 
-    // Offset is committed automatically by KafkaJS after eachMessage returns successfully
-    // If eachMessage throws, the offset is NOT committed and the message will be redelivered
-    // This ensures at-least-once delivery semantics
+    // The offset is resolved by runEventConsumer only after this resolves; a throw keeps
+    // this message (and the rest of its chunk) eligible for redelivery: at-least-once.
   } catch (error) {
     logger.error(`[Kafka] Failed to process message for event: ${eventId}`, error);
     // Re-throw to prevent offset commit

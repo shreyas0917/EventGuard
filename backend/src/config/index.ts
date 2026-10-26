@@ -23,6 +23,10 @@ export const config = {
   kafka_from_beginning: (process.env.KAFKA_FROM_BEGINNING ?? "true") === "true",
   // How long the group coordinator waits before declaring a silent consumer dead
   kafka_session_timeout_ms: parseInt(process.env.KAFKA_SESSION_TIMEOUT_MS || "30000", 10),
+  // Partitions processed in parallel, and messages processed concurrently within each
+  // partition's batch (offsets are still committed in order; see kafka/consumer.ts)
+  kafka_partitions_concurrency: parseInt(process.env.KAFKA_PARTITIONS_CONCURRENCY || "3", 10),
+  kafka_processing_concurrency: parseInt(process.env.KAFKA_PROCESSING_CONCURRENCY || "10", 10),
 
   // Phase 5: Idempotency and Redis configuration
   redis_lock_ttl_seconds: parseInt(process.env.REDIS_LOCK_TTL_SECONDS || "30", 10),
@@ -52,6 +56,9 @@ export const config = {
   retry_poll_interval_ms: parseInt(process.env.RETRY_POLL_INTERVAL_MS || "2000", 10),
   // Read-only ledger/balance cross-check; 0 disables the periodic run
   reconciliation_interval_ms: parseInt(process.env.RECONCILIATION_INTERVAL_MS || "300000", 10),
+
+  // The consumer process has no API; it serves /metrics and /health on this port
+  consumer_metrics_port: parseInt(process.env.CONSUMER_METRICS_PORT || "9464", 10),
 
   // Phase 7: Test configuration
   fail_processing_for_event_id: process.env.FAIL_PROCESSING_FOR_EVENT_ID || "",

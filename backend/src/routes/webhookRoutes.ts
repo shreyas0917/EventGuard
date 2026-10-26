@@ -12,6 +12,7 @@ import {
 import { ensurePaymentSuccessEvent } from "../services/paymentService.js";
 import { logger } from "../lib/logger.js";
 import { authenticate, requireRole } from "../middleware/auth.js";
+import { webhooksReceived } from "../lib/metrics.js";
 import { validate } from "../middleware/validate.js";
 import { webhookIdParams, webhookListQuery } from "../validation/schemas.js";
 
@@ -85,6 +86,7 @@ router.post(
 
       if (!result.verified) {
         if (result.reason === "duplicate") {
+          webhooksReceived.inc({ result: "duplicate" });
           // Duplicate webhook - acknowledge but don't process
           res.status(200).json({
             success: true,
@@ -93,6 +95,7 @@ router.post(
           return;
         }
 
+        webhooksReceived.inc({ result: "rejected" });
         // Invalid signature or other error
         res.status(401).json({
           success: false,
@@ -120,6 +123,7 @@ router.post(
         logger.info(`[Razorpay] Unsupported event type ignored: ${eventType}`);
       }
 
+      webhooksReceived.inc({ result: eventType === "payment.captured" || eventType === "payment.failed" ? "processed" : "ignored" });
       // Return success - wallet processing continues asynchronously
       res.status(200).json({
         success: true,

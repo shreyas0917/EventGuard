@@ -2,6 +2,7 @@ import { config } from "../config/index.js";
 import { logger } from "../lib/logger.js";
 import { prisma, TX_OPTIONS } from "../lib/prisma.js";
 import { upsertDeadLetter } from "./dlqService.js";
+import { eventsDeadLettered, retriesScheduled } from "../lib/metrics.js";
 
 export function calculateNextRetryTime(attemptCount: number): Date {
   // Exponential backoff: baseDelay * 2^(attemptCount - 1)
@@ -45,7 +46,7 @@ export async function handleProcessingFailure(
   try {
     logger.error(`[Retry] Event ${eventId} processing failed: ${errorMessage}`);
 
-    return await prisma.$transaction(async (tx) => {
+    const outcome = await prisma.$transaction(async (tx) => {
       const event = await tx.event.findUnique({
         where: { eventId },
         select: { status: true, claimToken: true, attemptCount: true, maxAttempts: true },
@@ -93,6 +94,11 @@ export async function handleProcessingFailure(
       logger.error(`[Retry] Event ${eventId} reached maximum attempts (${maxAttempts}) and was dead-lettered`);
       return "failed" as const;
     }, TX_OPTIONS);
+
+    // Counted only after the transaction committed
+    if (outcome === "retrying") retriesScheduled.inc();
+    if (outcome === "failed") eventsDeadLettered.inc();
+    return outcome;
   } catch (error) {
     logger.error(`[Retry] Error handling processing failure for ${eventId}`, error);
     throw error;

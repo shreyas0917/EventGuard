@@ -2,6 +2,7 @@ import { getRedis } from "../lib/redis.js";
 import { logger } from "../lib/logger.js";
 import { randomUUID } from "crypto";
 import { config } from "../config/index.js";
+import { redisLockErrors } from "../lib/metrics.js";
 
 const LOCK_PREFIX = "eventguard:lock:";
 
@@ -72,6 +73,7 @@ export async function acquireLock(
       acquired: false,
     };
   } catch (error) {
+    redisLockErrors.inc();
     logger.error(
       `[Redis] Infrastructure error acquiring lock for ${eventId} — not treating as contention`,
       error

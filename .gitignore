@@ -36,3 +36,6 @@ Thumbs.db
 # Local assistant settings and notes
 .claude/
 memory/
+
+# Load-test output (results are summarised in docs/PERFORMANCE.md)
+loadtest/results/

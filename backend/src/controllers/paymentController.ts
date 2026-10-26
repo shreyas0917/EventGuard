@@ -9,6 +9,7 @@ import {
 import { getEventByEventId } from "../services/eventService.js";
 import { logger } from "../lib/logger.js";
 import { resolveTargetUser } from "../middleware/auth.js";
+import { paymentVerifications } from "../lib/metrics.js";
 
 export async function handleCreateOrder(req: Request, res: Response): Promise<void> {
   try {
@@ -54,6 +55,7 @@ export async function handleVerifyPayment(req: Request, res: Response): Promise<
     });
 
     if (!isSignatureValid) {
+      paymentVerifications.inc({ result: "invalid_signature" });
       logger.warn(`[Controller] Invalid signature for order ${orderId}`);
       res.status(400).json({
         error: "Invalid payment signature",
@@ -66,6 +68,7 @@ export async function handleVerifyPayment(req: Request, res: Response): Promise<
     // notes.userId at creation, so a valid signature for someone else's order is refused.
     const orderOwner = await fetchOrderOwner(orderId);
     if (orderOwner !== userId) {
+      paymentVerifications.inc({ result: "ownership_mismatch" });
       logger.warn(`[Controller] Order ${orderId} does not belong to ${userId}`, {
         requestId: (req as any).requestId,
       });
@@ -81,6 +84,7 @@ export async function handleVerifyPayment(req: Request, res: Response): Promise<
     const paymentDetails = await fetchPaymentDetails(paymentId);
 
     if (paymentDetails.status !== "captured") {
+      paymentVerifications.inc({ result: "not_captured" });
       logger.warn(`[Controller] Payment not captured: ${paymentId}`);
       res.status(400).json({
         error: "Payment not captured",
@@ -105,6 +109,7 @@ export async function handleVerifyPayment(req: Request, res: Response): Promise<
       source: "verify",
     });
 
+    paymentVerifications.inc({ result: result.eventCreated ? "verified" : "verified_duplicate" });
     const event = await getEventByEventId(result.eventId);
 
     logger.info(

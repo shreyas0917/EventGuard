@@ -1,6 +1,7 @@
 import { prisma, TX_OPTIONS } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 import { creditWalletInTx } from "./walletService.js";
+import { walletCreditAmount, walletCredits } from "../lib/metrics.js";
 
 export interface ClaimedEvent {
   eventId: string;
@@ -35,13 +36,17 @@ function parsePaymentPayload(eventId: string, payload: any): PaymentCredit {
  * statement that waits on a potentially hot row lock (many events, one wallet),
  * so it runs last and the lock is held only until COMMIT.
  *
- * Returns false if the claim was lost (nothing was written).
+ * Returns { completed: false } if the claim was lost (nothing was written), otherwise
+ * the event's creation time, for end-to-end latency.
  */
-export async function completeEvent(event: ClaimedEvent, claimToken: string): Promise<boolean> {
+export type CompletionResult = { completed: true; createdAt: Date } | { completed: false };
+
+export async function completeEvent(event: ClaimedEvent, claimToken: string): Promise<CompletionResult> {
   const { eventId } = event;
   const credit = event.eventType === "PAYMENT_SUCCESS" ? parsePaymentPayload(eventId, event.payload) : null;
 
-  return prisma.$transaction(async (tx) => {
+  let credited = false;
+  const result = await prisma.$transaction(async (tx): Promise<CompletionResult> => {
     const fenced = await tx.event.updateMany({
       where: { eventId, status: "PROCESSING", claimToken },
       data: {
@@ -54,8 +59,10 @@ export async function completeEvent(event: ClaimedEvent, claimToken: string): Pr
     });
 
     if (fenced.count !== 1) {
-      return false;
+      return { completed: false };
     }
+
+    const { createdAt } = await tx.event.findUniqueOrThrow({ where: { eventId }, select: { createdAt: true } });
 
     // We hold the event row lock, so only this transaction can be crediting this eventId.
     // An existing ledger row means an earlier attempt already paid; the UNIQUE constraint
@@ -81,8 +88,16 @@ export async function completeEvent(event: ClaimedEvent, claimToken: string): Pr
     // Last: ledger insert + atomic balance increment
     if (credit && !alreadyCredited) {
       await creditWalletInTx(tx, credit.userId, credit.amount, eventId, "Payment received");
+      credited = true;
     }
 
-    return true;
+    return { completed: true, createdAt };
   }, TX_OPTIONS);
+
+  // Counted only after the transaction committed
+  if (credited && credit) {
+    walletCredits.inc();
+    walletCreditAmount.inc(Number(credit.amount));
+  }
+  return result;
 }

@@ -1,5 +1,11 @@
 import { prisma } from "../lib/prisma.js";
-import { logger } from "../lib/logger.js";
+import { logger, withLogContext } from "../lib/logger.js";
+import {
+  duplicateDeliveries,
+  eventEndToEndLatency,
+  eventProcessingDuration,
+  eventsProcessed,
+} from "../lib/metrics.js";
 import { acquireLock, releaseLock } from "../services/redisLockService.js";
 import {
   markEventCompletedInCache,
@@ -27,7 +33,16 @@ const DUPLICATE_REASONS = {
   "retry-scheduled": "Duplicate - retry already scheduled",
 } as const;
 
+async function recordDuplicate(eventId: string, reason: string, message: string): Promise<void> {
+  duplicateDeliveries.inc({ reason });
+  await recordDuplicateDelivery(eventId, message);
+}
+
 export async function processEvent(kafkaMessage: KafkaEvent): Promise<void> {
+  return withLogContext({ eventId: kafkaMessage.eventId }, () => processEventInContext(kafkaMessage));
+}
+
+async function processEventInContext(kafkaMessage: KafkaEvent): Promise<void> {
   const { eventId } = kafkaMessage;
 
   try {
@@ -36,7 +51,7 @@ export async function processEvent(kafkaMessage: KafkaEvent): Promise<void> {
     // STEP 1: Fast check using Redis cache (optimization only)
     if (await isEventCompletedInCache(eventId)) {
       logger.info(`[Worker] Event in Redis completed cache: ${eventId}`);
-      await recordDuplicateDelivery(eventId, "Duplicate delivery - found in completed cache");
+      await recordDuplicate(eventId, "completed_cache", "Duplicate delivery - found in completed cache");
       return;
     }
 
@@ -46,7 +61,7 @@ export async function processEvent(kafkaMessage: KafkaEvent): Promise<void> {
 
     if (!lockHandle.acquired) {
       logger.info(`[Worker] Redis lock contention for ${eventId} - another worker holds the lock`);
-      await recordDuplicateDelivery(eventId, "Concurrent processing detected - Redis lock unavailable");
+      await recordDuplicate(eventId, "lock_contention", "Concurrent processing detected - Redis lock unavailable");
       // Normal contention: do not process. Offset may commit; the lock holder owns the work.
       return;
     }
@@ -62,7 +77,7 @@ export async function processEvent(kafkaMessage: KafkaEvent): Promise<void> {
 
       if (claim.outcome !== "claimed") {
         logger.info(`[Worker] Not claimable (${claim.outcome}): ${eventId}`);
-        await recordDuplicateDelivery(eventId, DUPLICATE_REASONS[claim.outcome]);
+        await recordDuplicate(eventId, claim.outcome.replace("-", "_"), DUPLICATE_REASONS[claim.outcome]);
         if (claim.outcome === "already-completed") {
           await markEventCompletedInCache(eventId);
         }
@@ -90,6 +105,16 @@ export async function processEvent(kafkaMessage: KafkaEvent): Promise<void> {
  * worker recovers the event.
  */
 export async function processClaimedEvent(event: KafkaEvent, claimToken: string): Promise<ProcessOutcome> {
+  const startedAt = process.hrtime.bigint();
+  const outcome = await runClaimedEvent(event, claimToken);
+  const seconds = Number(process.hrtime.bigint() - startedAt) / 1e9;
+  const labels = { event_type: event.eventType, outcome: outcome.replace("-", "_") };
+  eventsProcessed.inc(labels);
+  eventProcessingDuration.observe(labels, seconds);
+  return outcome;
+}
+
+async function runClaimedEvent(event: KafkaEvent, claimToken: string): Promise<ProcessOutcome> {
   const { eventId, eventType, payload } = event;
 
   try {
@@ -108,15 +133,17 @@ export async function processClaimedEvent(event: KafkaEvent, claimToken: string)
     await simulateProcessing(PROCESSING_DELAY_MS);
     maybeCrash("crash-before-commit", eventId);
 
-    const completed = await completeEvent(event, claimToken);
+    const completion = await completeEvent(event, claimToken);
     maybeCrash("crash-after-commit", eventId);
-    if (!completed) {
+    if (!completion.completed) {
       logger.warn(`[Worker] Claim on ${eventId} expired and was taken over; nothing written`);
       return "lease-lost";
     }
 
     await markEventCompletedInCache(eventId);
-    logger.info(`[Worker] Event completed: ${eventId}`);
+    const endToEndSeconds = (Date.now() - completion.createdAt.getTime()) / 1000;
+    eventEndToEndLatency.observe({ event_type: eventType }, endToEndSeconds);
+    logger.info(`[Worker] Event completed: ${eventId}`, { endToEndMs: Math.round(endToEndSeconds * 1000) });
     return "completed";
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);

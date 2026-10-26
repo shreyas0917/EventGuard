@@ -15,6 +15,7 @@ import { rateLimit, strictRateLimit, webhookRateLimit, authRateLimit } from "./m
 import { authenticate, requireRole } from "./middleware/auth.js";
 import authRouter from "./routes/auth.js";
 import adminRouter from "./routes/adminRoutes.js";
+import { metricsHandler } from "./routes/metrics.js";
 
 export function createApp() {
   const app = express();
@@ -47,6 +48,9 @@ export function createApp() {
 
   // Health endpoints (no rate limit, no auth)
   app.use("/health", healthRouter);
+
+  // Prometheus scrape endpoint (optional METRICS_TOKEN)
+  app.get("/metrics", metricsHandler);
 
   // Access policy
   //   public:        /health, /api/auth/demo-login, GET /api/payments/config

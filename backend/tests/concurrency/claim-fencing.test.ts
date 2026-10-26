@@ -38,10 +38,10 @@ describe("claim leases and fencing tokens", () => {
     const staleToken = await claim("evt_fence"); // worker A stalls...
     await expireLease("evt_fence");
     const freshToken = await claim("evt_fence"); // ...worker B takes over and finishes
-    expect(await completeEvent(message, freshToken)).toBe(true);
+    expect((await completeEvent(message, freshToken)).completed).toBe(true);
 
     // Worker A wakes up and tries to finish with its old token
-    expect(await completeEvent(message, staleToken)).toBe(false);
+    expect((await completeEvent(message, staleToken)).completed).toBe(false);
     expect(await handleProcessingFailure("evt_fence", staleToken, "late failure", message.eventType, message.payload)).toBe(
       "lease-lost"
     );

@@ -1,6 +1,7 @@
 import { publishEvent, publishEvents } from "../kafka/producer.js";
 import { logger } from "../lib/logger.js";
 import { prisma } from "../lib/prisma.js";
+import { outboxPublished, outboxPublishFailures } from "../lib/metrics.js";
 import { config } from "../config/index.js";
 
 export interface OutboxPublisherConfig {
@@ -92,11 +93,13 @@ export async function processOutboxBatch(
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     await recordFailure(batch, errorMessage);
+    outboxPublishFailures.inc(batch.length);
     logger.error(`[Outbox] Failed to publish batch of ${batch.length}; will retry with backoff`, error);
     return 0;
   }
 
   await markPublished(batch);
+  outboxPublished.inc(batch.length);
   logger.info(`[Outbox] Published ${batch.length} event(s)`);
   return batch.length;
 }
