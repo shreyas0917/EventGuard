@@ -64,7 +64,7 @@
   <!-- Express API -->
   <rect class="card" x="88.5" y="424.5" width="735" height="159" rx="12"/>
   <text x="112" y="465"><tspan class="h">Express API</tspan><tspan class="m k" dx="12" style="font-size: 13px">:3001</tspan></text>
-  <text x="112" y="486" class="mu">helmet · CORS · correlation ID · rate limits · raw-body capture</text>
+  <text x="112" y="486" class="mu">JWT roles · ownership checks · zod validation · rate limits · request IDs</text>
   <circle class="badge" cx="122" cy="504" r="10"/><text x="122" y="508" class="bt">1</text>
   <text x="140" y="508">Unique <tspan class="m c">eventId</tspan>: Event + EventLog + OutboxEvent in one transaction; duplicate → 409</text>
   <circle class="badge" cx="122" cy="526" r="10"/><text x="122" y="530" class="bt">2</text>
@@ -74,18 +74,18 @@
 
   <!-- Retry worker -->
   <rect class="card-rt" x="88.5" y="632.5" width="343" height="159" rx="12"/>
-  <text x="112" y="673" class="h">Retry worker</text>
-  <text x="112" y="694">every 2 s: due <tspan class="m c">RETRYING</tspan> events</text>
-  <text x="112" y="716">backoff 1 s × 2ⁿ⁻¹, capped at 30 s</text>
+  <text x="112" y="673" class="h">Retry + recovery worker</text>
+  <text x="112" y="694">due retries · expired leases</text>
+  <text x="112" y="716">never-claimed events (sweep)</text>
   <text x="112" y="738">3rd failure → <tspan class="m c">FAILED</tspan> + DLQ row</text>
   <text x="112" y="760">replay: <tspan class="m c">POST /api/dlq/:id/replay</tspan></text>
 
   <!-- Outbox worker -->
   <rect class="card-ev" x="480.5" y="632.5" width="343" height="159" rx="12"/>
   <text x="504" y="684" class="h">Outbox worker</text>
-  <text x="504" y="705">every 2 s: up to 10 <tspan class="m c">PENDING</tspan> rows</text>
+  <text x="504" y="705">leases 50 <tspan class="m c">PENDING</tspan> rows (SKIP LOCKED)</text>
   <text x="504" y="727">publish to Kafka, then mark <tspan class="m c">PUBLISHED</tspan></text>
-  <text x="504" y="749">on error the row stays <tspan class="m c">PENDING</tspan></text>
+  <text x="504" y="749">on error: stays <tspan class="m c">PENDING</tspan>, backoff</text>
 
   <!-- Kafka -->
   <rect class="card-ev" x="480.5" y="912.5" width="343" height="95" rx="12"/>
@@ -100,10 +100,10 @@
   <circle class="badge" cx="122" cy="1217" r="10"/><text x="122" y="1221" class="bt">5</text>
   <text x="140" y="1221">Redis lock <tspan class="m c">SET NX EX 30</tspan>: Redis down → rethrow, Kafka offset not committed</text>
   <circle class="badge" cx="122" cy="1239" r="10"/><text x="122" y="1243" class="bt">6</text>
-  <text x="140" y="1243">Postgres claim: RECEIVED | RETRYING → PROCESSING, attempt + 1</text>
+  <text x="140" y="1243">Atomic claim: one conditional UPDATE + lease + fencing token</text>
   <circle class="badge" cx="122" cy="1261" r="10"/><text x="122" y="1265" class="bt">7</text>
-  <text x="140" y="1265">creditWallet(): <tspan class="m c">WalletTransaction.eventId</tspan> UNIQUE + balance, one tx</text>
-  <text x="112" y="1287" class="mu">then COMPLETED · cached 24 h · lock released</text>
+  <text x="140" y="1265">Fenced tx: COMPLETED + ledger (<tspan class="m c">eventId</tspan> UNIQUE) + balance</text>
+  <text x="112" y="1287" class="mu">then cached 24 h · lock released · /metrics on :9464</text>
 
   <!-- PostgreSQL -->
   <rect class="card" x="1000.5" y="424.5" width="223" height="775" rx="12"/>
@@ -125,6 +125,8 @@
   <circle class="badge" cx="1092" cy="955" r="10"/><text x="1092" y="959" class="bt">7</text>
   <text x="1024" y="1003" class="m c">wallets · event_logs</text>
   <text x="1024" y="1025" class="m c">dead_letter_events</text>
+  <text x="1024" y="1069" class="mu">CHECK amount &gt; 0</text>
+  <text x="1024" y="1091" class="mu">CHECK balance ≥ 0</text>
 
   <!-- Redis -->
   <rect class="card" x="1000.5" y="1248.5" width="223" height="79" rx="12"/>
@@ -167,6 +169,6 @@
   <text x="620" y="1428" class="al">failure → retry</text>
   <circle class="badge" cx="782" cy="1424" r="10"/><text x="782" y="1428" class="bt">1</text>
   <text x="804" y="1428" class="al">idempotency guard</text>
-  <text x="968" y="1420" class="k" style="font-size: 13px">API and consumer run as two processes</text>
-  <text x="968" y="1436" class="k" style="font-size: 13px">in the eventguard-backend container</text>
+  <text x="968" y="1420" class="k" style="font-size: 13px">API and consumer: two processes, each</text>
+  <text x="968" y="1436" class="k" style="font-size: 13px">exporting Prometheus metrics</text>
 </svg>
