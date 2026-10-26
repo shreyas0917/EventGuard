@@ -164,17 +164,24 @@ export async function resetEventForRetry(eventId: string): Promise<boolean> {
 }
 
 /**
- * Events the retry worker should run now: retries whose backoff elapsed, and
- * PROCESSING events whose lease expired because their worker died mid-flight.
+ * Events the retry worker should run now:
+ *   - RETRYING events whose backoff elapsed
+ *   - PROCESSING events whose lease expired because their worker died mid-flight
+ *   - RECEIVED events that were never claimed. A Kafka delivery that finds the Redis
+ *     lock held treats it as contention and commits its offset; if the holder was a
+ *     crashed worker (or a timed-out SET that still landed), no one else would ever
+ *     run the event. The database is the source of truth, so the sweeper does.
  */
 export async function getRetryableEvents(limit: number = 50): Promise<any[]> {
   try {
     const now = new Date();
+    const staleBefore = new Date(now.getTime() - config.stale_received_seconds * 1000);
     const events = await prisma.event.findMany({
       where: {
         OR: [
           { status: "RETRYING", nextRetryAt: { lte: now } },
           { status: "PROCESSING", leaseExpiresAt: { lt: now } },
+          { status: "RECEIVED", createdAt: { lt: staleBefore } },
         ],
       },
       select: {

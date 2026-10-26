@@ -14,6 +14,7 @@ import { corsMiddleware, securityHeaders } from "./middleware/security.js";
 import { rateLimit, strictRateLimit, webhookRateLimit, authRateLimit } from "./middleware/rateLimiter.js";
 import { authenticate, requireRole } from "./middleware/auth.js";
 import authRouter from "./routes/auth.js";
+import adminRouter from "./routes/adminRoutes.js";
 
 export function createApp() {
   const app = express();
@@ -51,7 +52,7 @@ export function createApp() {
   //   public:        /health, /api/auth/demo-login, GET /api/payments/config
   //   HMAC-signed:   POST /api/webhooks/razorpay
   //   any user:      own wallet, own payment orders and verification
-  //   admin only:    events, retries, outbox, DLQ, webhook history
+  //   admin only:    events, retries, outbox, DLQ, webhook history, reconciliation
   app.use("/api/auth", authRateLimit, authRouter);
 
   // Mount retryRouter before eventsRouter so static paths (/failed, /retrying)
@@ -60,6 +61,8 @@ export function createApp() {
   app.use("/api/outbox", authenticate, requireRole("admin"), outboxRouter);
   app.use("/api/payments", paymentsRouter);
   app.use("/api/wallets", authenticate, walletsRouter);
+
+  app.use("/api/admin", authenticate, requireRole("admin"), adminRouter);
 
   // DLQ endpoints with strict rate limit (admin operations)
   app.use("/api/dlq", authenticate, requireRole("admin"), strictRateLimit, dlqRouter);

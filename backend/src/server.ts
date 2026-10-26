@@ -8,6 +8,7 @@ import { prisma } from "./lib/prisma.js";
 import { logger } from "./lib/logger.js";
 import { startOutboxWorker, stopOutboxWorker } from "./workers/outboxWorker.js";
 import { startRetryWorker, stopRetryWorker } from "./workers/retryWorker.js";
+import { startReconciliationWorker } from "./workers/reconciliationWorker.js";
 import { initializeProducer, disconnectProducer } from "./kafka/producer.js";
 import { ensureTopicExists } from "./kafka/topicSetup.js";
 import { initializeRazorpay, isRazorpayConfigured } from "./lib/razorpay.js";
@@ -62,8 +63,8 @@ async function startup() {
 
     // Start outbox worker (enabled now that Kafka producer is ready)
     startOutboxWorker({
-      intervalMs: parseInt(process.env.OUTBOX_POLL_INTERVAL_MS || "2000", 10),
-      batchSize: parseInt(process.env.OUTBOX_BATCH_SIZE || "10", 10),
+      intervalMs: parseInt(process.env.OUTBOX_POLL_INTERVAL_MS || "500", 10),
+      batchSize: parseInt(process.env.OUTBOX_BATCH_SIZE || "50", 10),
       enabled: true,
     });
     logger.info("✓ Outbox worker started");
@@ -71,6 +72,8 @@ async function startup() {
     // Start retry worker for Phase 7
     startRetryWorker(config.retry_poll_interval_ms);
     logger.info("✓ Retry worker started");
+
+    startReconciliationWorker(config.reconciliation_interval_ms);
 
     const server = app.listen(config.backend_port, () => {
       logger.info(

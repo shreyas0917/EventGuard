@@ -87,6 +87,9 @@ export function validateEnvironment(): ValidationResult {
     if (config.auth_demo_login_enabled) {
       errors.push("AUTH_DEMO_LOGIN must be false in production (it issues tokens without a user store)");
     }
+    if (process.env.FAULT_INJECTION || config.fail_processing_for_event_id) {
+      errors.push("FAULT_INJECTION and FAIL_PROCESSING_FOR_EVENT_ID are test-only and must be unset in production");
+    }
   }
 
   return {

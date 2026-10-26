@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-security:
+    name: Build, lint, security tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate --schema backend/prisma/schema.prisma
+
+      - name: Type-check and build (backend + frontend)
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Security tests (in-process, no infrastructure)
+        working-directory: backend
+        run: npm run test:security
+
+  integration:
+    name: Concurrency and failure-injection tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate --schema backend/prisma/schema.prisma
+
+      - name: Start disposable PostgreSQL, Redis and Kafka
+        run: docker compose -f docker-compose.test.yml up -d --wait
+
+      - name: Concurrency and failure-injection suites
+        working-directory: backend
+        run: npm run test:integration
+
+      - name: Test stack logs
+        if: failure()
+        run: docker compose -f docker-compose.test.yml logs --tail 200
+
+      - name: Stop test stack
+        if: always()
+        run: docker compose -f docker-compose.test.yml down

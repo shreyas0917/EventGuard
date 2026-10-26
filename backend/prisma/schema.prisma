@@ -60,11 +60,15 @@ model OutboxEvent {
   status        OutboxStatus   @default(PENDING)
   attemptCount  Int            @default(0)
   lastError     String?
+  // Publish lease: a worker claims a batch until this time (FOR UPDATE SKIP LOCKED),
+  // and a failed publish pushes it out as backoff. Expired leases are claimable again.
+  lockedUntil   DateTime?
   createdAt     DateTime       @default(now())
   publishedAt   DateTime?
 
   @@index([status])
   @@index([createdAt])
+  @@index([status, lockedUntil])
   @@map("outbox_events")
 }
 

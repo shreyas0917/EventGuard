@@ -8,6 +8,7 @@ import {
 import { claimEventForProcessing, recordDuplicateDelivery } from "../services/eventClaimService.js";
 import { completeEvent } from "../services/eventCompletionService.js";
 import { handleProcessingFailure, shouldProcessFailSimulation } from "../services/retryService.js";
+import { maybeCrash } from "../lib/faultInjection.js";
 
 export interface KafkaEvent {
   eventId: string;
@@ -105,8 +106,10 @@ export async function processClaimedEvent(event: KafkaEvent, claimToken: string)
 
     // Simulate processing with optional delay for testing (outside any transaction)
     await simulateProcessing(PROCESSING_DELAY_MS);
+    maybeCrash("crash-before-commit", eventId);
 
     const completed = await completeEvent(event, claimToken);
+    maybeCrash("crash-after-commit", eventId);
     if (!completed) {
       logger.warn(`[Worker] Claim on ${eventId} expired and was taken over; nothing written`);
       return "lease-lost";

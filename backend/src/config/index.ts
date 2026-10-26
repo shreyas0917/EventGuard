@@ -11,10 +11,18 @@ export const config = {
   redis_host: process.env.REDIS_HOST || "localhost",
   redis_port: parseInt(process.env.REDIS_PORT || "6379", 10),
   redis_db: parseInt(process.env.REDIS_DB || "0", 10),
+  // A hung Redis must fail commands rather than stall the consumer indefinitely
+  redis_command_timeout_ms: parseInt(process.env.REDIS_COMMAND_TIMEOUT_MS || "2000", 10),
 
   kafka_brokers: (process.env.KAFKA_BROKERS || "localhost:9092").split(","),
   kafka_topic: process.env.KAFKA_TOPIC || "eventguard.events",
   kafka_consumer_group: process.env.KAFKA_CONSUMER_GROUP || "eventguard-workers",
+  // Where a group with no committed offset starts. "Latest" would silently skip events
+  // already in the topic (new deployment, or a crash before the first commit); replays
+  // from the beginning are absorbed by the idempotency layers.
+  kafka_from_beginning: (process.env.KAFKA_FROM_BEGINNING ?? "true") === "true",
+  // How long the group coordinator waits before declaring a silent consumer dead
+  kafka_session_timeout_ms: parseInt(process.env.KAFKA_SESSION_TIMEOUT_MS || "30000", 10),
 
   // Phase 5: Idempotency and Redis configuration
   redis_lock_ttl_seconds: parseInt(process.env.REDIS_LOCK_TTL_SECONDS || "30", 10),
@@ -26,6 +34,11 @@ export const config = {
   // How long a PROCESSING claim is honoured before another worker may take it over.
   // Must comfortably exceed the time one event takes to process.
   event_lease_seconds: parseInt(process.env.EVENT_LEASE_SECONDS || "60", 10),
+  // A RECEIVED event this old was never claimed: its delivery hit a lock left by a
+  // crashed worker (and committed its offset) or never arrived. The retry worker runs it.
+  stale_received_seconds: parseInt(process.env.STALE_RECEIVED_SECONDS || "120", 10),
+  // How long a claimed outbox batch is reserved for the publisher that claimed it
+  outbox_lease_seconds: parseInt(process.env.OUTBOX_LEASE_SECONDS || "30", 10),
 
   // Phase 6: Razorpay configuration
   razorpay_key_id: process.env.RAZORPAY_KEY_ID || "",
@@ -37,6 +50,8 @@ export const config = {
   retry_base_delay_ms: parseInt(process.env.RETRY_BASE_DELAY_MS || "1000", 10),
   max_retry_delay_ms: parseInt(process.env.MAX_RETRY_DELAY_MS || "30000", 10),
   retry_poll_interval_ms: parseInt(process.env.RETRY_POLL_INTERVAL_MS || "2000", 10),
+  // Read-only ledger/balance cross-check; 0 disables the periodic run
+  reconciliation_interval_ms: parseInt(process.env.RECONCILIATION_INTERVAL_MS || "300000", 10),
 
   // Phase 7: Test configuration
   fail_processing_for_event_id: process.env.FAIL_PROCESSING_FOR_EVENT_ID || "",

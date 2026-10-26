@@ -27,6 +27,7 @@ const ADMIN_ROUTES: Array<[method: "get" | "post", path: string]> = [
   ["get", "/api/dlq/stats/summary"],
   ["get", "/api/webhooks/razorpay"],
   ["get", `/api/webhooks/razorpay/${WEBHOOK_ID}`],
+  ["get", "/api/admin/reconciliation"],
 ];
 
 const USER_ROUTES: Array<[method: "get" | "post", path: string]> = [

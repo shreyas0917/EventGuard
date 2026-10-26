@@ -24,12 +24,12 @@ export async function createEventConsumer(options: EventConsumerOptions = {}): P
   const kafka = getKafka();
   const created = kafka.consumer({
     groupId,
-    sessionTimeout: 30000,
+    sessionTimeout: config.kafka_session_timeout_ms,
     rebalanceTimeout: 60000,
   });
 
   await created.connect();
-  await created.subscribe({ topic, fromBeginning: options.fromBeginning ?? false });
+  await created.subscribe({ topic, fromBeginning: options.fromBeginning ?? config.kafka_from_beginning });
   logger.info(`[Kafka] Consumer in group ${groupId} subscribed to ${topic}`);
   return created;
 }

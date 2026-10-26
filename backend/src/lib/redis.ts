@@ -43,11 +43,18 @@ export async function connectRedis() {
       host: config.redis_host,
       port: config.redis_port,
       db: config.redis_db,
+      commandTimeout: config.redis_command_timeout_ms,
+      connectTimeout: 5000,
       retryStrategy: (times) => Math.min(times * 50, 2000),
       // Fail commands immediately when disconnected so lock acquisition can
       // distinguish Redis outage from normal lock contention (do not queue forever).
       enableOfflineQueue: false,
       maxRetriesPerRequest: 1,
+    });
+
+    // Without a listener ioredis prints "Unhandled error event" on every failed reconnect
+    redisInstance.on("error", (error) => {
+      logger.warn("[Redis] Connection error", { message: error.message });
     });
 
     await waitForReady(redisInstance);

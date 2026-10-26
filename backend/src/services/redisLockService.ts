@@ -1,9 +1,9 @@
 import { getRedis } from "../lib/redis.js";
 import { logger } from "../lib/logger.js";
 import { randomUUID } from "crypto";
+import { config } from "../config/index.js";
 
 const LOCK_PREFIX = "eventguard:lock:";
-const DEFAULT_LOCK_TTL_SECONDS = 30;
 
 interface LockOptions {
   ttlSeconds?: number;
@@ -33,7 +33,7 @@ export async function acquireLock(
   eventId: string,
   options: LockOptions = {}
 ): Promise<LockHandle> {
-  const ttl = options.ttlSeconds || DEFAULT_LOCK_TTL_SECONDS;
+  const ttl = options.ttlSeconds || config.redis_lock_ttl_seconds;
   const lockKey = `${LOCK_PREFIX}${eventId}`;
   const lockValue = randomUUID();
 
@@ -83,6 +83,14 @@ export async function acquireLock(
   }
 }
 
+// Delete the key only if it still holds our token, in one atomic step. A separate
+// GET then DEL could delete a lock another worker acquired after ours expired.
+const RELEASE_IF_OWNER = `
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("DEL", KEYS[1])
+end
+return 0`;
+
 export async function releaseLock(handle: LockHandle): Promise<boolean> {
   if (!handle.acquired) {
     return false;
@@ -90,11 +98,9 @@ export async function releaseLock(handle: LockHandle): Promise<boolean> {
 
   try {
     const redisClient = getRedis();
-    // Only delete if the value still matches (safety check)
-    const currentValue = await redisClient.get(handle.key);
+    const released = await redisClient.eval(RELEASE_IF_OWNER, 1, handle.key, handle.value);
 
-    if (currentValue === handle.value) {
-      await redisClient.del(handle.key);
+    if (released === 1) {
       logger.debug(`[Redis] Lock released for ${handle.key}`);
       return true;
     }
