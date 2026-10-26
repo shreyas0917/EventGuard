@@ -1,6 +1,7 @@
 import { Producer } from "kafkajs";
 import { getKafka } from "../lib/kafka.js";
 import { logger } from "../lib/logger.js";
+import { config } from "../config/index.js";
 
 let producer: Producer | null = null;
 
@@ -33,7 +34,7 @@ export async function publishEvent(eventId: string, eventType: string, payload: 
 
   try {
     const result = await producer.send({
-      topic: "eventguard.events",
+      topic: config.kafka_topic,
       messages: [
         {
           key: eventId,

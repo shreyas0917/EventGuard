@@ -10,8 +10,11 @@ export const config = {
 
   redis_host: process.env.REDIS_HOST || "localhost",
   redis_port: parseInt(process.env.REDIS_PORT || "6379", 10),
+  redis_db: parseInt(process.env.REDIS_DB || "0", 10),
 
   kafka_brokers: (process.env.KAFKA_BROKERS || "localhost:9092").split(","),
+  kafka_topic: process.env.KAFKA_TOPIC || "eventguard.events",
+  kafka_consumer_group: process.env.KAFKA_CONSUMER_GROUP || "eventguard-workers",
 
   // Phase 5: Idempotency and Redis configuration
   redis_lock_ttl_seconds: parseInt(process.env.REDIS_LOCK_TTL_SECONDS || "30", 10),
@@ -20,6 +23,9 @@ export const config = {
     10
   ),
   processing_delay_ms: parseInt(process.env.PROCESSING_DELAY_MS || "0", 10),
+  // How long a PROCESSING claim is honoured before another worker may take it over.
+  // Must comfortably exceed the time one event takes to process.
+  event_lease_seconds: parseInt(process.env.EVENT_LEASE_SECONDS || "60", 10),
 
   // Phase 6: Razorpay configuration
   razorpay_key_id: process.env.RAZORPAY_KEY_ID || "",
@@ -38,6 +44,7 @@ export const config = {
   // Phase 10: Rate limiting
   rate_limit_window_ms: parseInt(process.env.RATE_LIMIT_WINDOW_MS || "60000", 10),
   rate_limit_max_requests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || "100", 10),
+  webhook_rate_limit_max_requests: parseInt(process.env.WEBHOOK_RATE_LIMIT_MAX_REQUESTS || "600", 10),
 
   // Phase 10: CORS
   cors_origin: process.env.CORS_ORIGIN || "http://localhost:5173",

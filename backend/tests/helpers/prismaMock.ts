@@ -54,6 +54,9 @@ export const prisma: any = new Proxy(
   }
 );
 
+// Mirrors src/lib/prisma.ts so modules importing the transaction budget load against the mock
+export const TX_OPTIONS = { maxWait: 10_000, timeout: 20_000 };
+
 export function resetPrismaMock(): void {
   models.clear();
 }

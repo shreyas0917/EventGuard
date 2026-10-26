@@ -161,16 +161,24 @@ async function runPhase7Tests() {
       },
     });
 
-    // Simulate max attempts reached
-    const maxEvent = await prisma.event.update({
+    // Simulate max attempts reached: the worker holds the claim on its third attempt
+    await prisma.event.update({
       where: { eventId: maxAttemptsEventId },
       data: {
         attemptCount: 3,
         status: "PROCESSING",
+        claimToken: "phase7-claim",
+        leaseExpiresAt: new Date(Date.now() + 60_000),
       },
     });
 
-    await handleProcessingFailure(maxAttemptsEventId, "Simulated max attempts", 3, 3);
+    await handleProcessingFailure(
+      maxAttemptsEventId,
+      "phase7-claim",
+      "Simulated max attempts",
+      "PAYMENT_SUCCESS",
+      { userId: "non_existent_user", paymentId: "pay_max_1", orderId: "order_max_1", amount: 25 }
+    );
 
     const finalMaxEvent = await prisma.event.findUnique({
       where: { eventId: maxAttemptsEventId },

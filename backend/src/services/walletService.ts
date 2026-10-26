@@ -1,4 +1,5 @@
-import { prisma } from "../lib/prisma.js";
+import { Prisma } from "@prisma/client";
+import { prisma, TX_OPTIONS } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 
 export async function createWallet(userId: string): Promise<any> {
@@ -40,6 +41,56 @@ export async function getWallet(userId: string): Promise<any> {
   }
 }
 
+/**
+ * Credit a wallet inside the caller's transaction: insert the ledger row (UNIQUE on
+ * eventId) and increment the balance in the same statement batch, so the two can
+ * never diverge. Throws if the wallet does not exist or the eventId was already used.
+ */
+export async function creditWalletInTx(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  amount: number,
+  eventId: string,
+  reason: string = "Payment received"
+) {
+  const wallet = await tx.wallet.findUnique({
+    where: { userId },
+  });
+
+  if (!wallet) {
+    throw new Error(`Wallet not found for user: ${userId}`);
+  }
+
+  // Create wallet transaction with UNIQUE constraint on eventId
+  const walletTransaction = await tx.walletTransaction.create({
+    data: {
+      walletId: wallet.id,
+      eventId,
+      type: "CREDIT",
+      amount,
+      reason,
+      status: "COMPLETED",
+    },
+  });
+
+  // Atomic increment: UPDATE ... SET balance = balance + amount, no read-modify-write
+  const updatedWallet = await tx.wallet.update({
+    where: { userId },
+    data: {
+      balance: {
+        increment: amount,
+      },
+    },
+  });
+
+  logger.info(`[Wallet] Credited ${amount} to user ${userId} for event ${eventId}`);
+
+  return {
+    wallet: updatedWallet,
+    walletTransaction,
+  };
+}
+
 export async function creditWallet(
   userId: string,
   amount: number,
@@ -47,50 +98,7 @@ export async function creditWallet(
   reason: string = "Payment received"
 ): Promise<any> {
   try {
-    // Use transaction to ensure atomicity
-    const result = await prisma.$transaction(async (tx) => {
-      // Check if wallet exists
-      const wallet = await tx.wallet.findUnique({
-        where: { userId },
-      });
-
-      if (!wallet) {
-        throw new Error(`Wallet not found for user: ${userId}`);
-      }
-
-      // Create wallet transaction with UNIQUE constraint on eventId
-      const walletTransaction = await tx.walletTransaction.create({
-        data: {
-          walletId: wallet.id,
-          eventId,
-          type: "CREDIT",
-          amount,
-          reason,
-          status: "COMPLETED",
-        },
-      });
-
-      // Update wallet balance
-      const updatedWallet = await tx.wallet.update({
-        where: { userId },
-        data: {
-          balance: {
-            increment: amount,
-          },
-        },
-      });
-
-      logger.info(
-        `[Wallet] Credited ${amount} to user ${userId} for event ${eventId}`
-      );
-
-      return {
-        wallet: updatedWallet,
-        walletTransaction,
-      };
-    });
-
-    return result;
+    return await prisma.$transaction((tx) => creditWalletInTx(tx, userId, amount, eventId, reason), TX_OPTIONS);
   } catch (error) {
     logger.error(
       `[Wallet] Error crediting wallet for ${userId} on event ${eventId}`,

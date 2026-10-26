@@ -1,7 +1,7 @@
 import { config } from "../config/index.js";
 import { logger } from "../lib/logger.js";
-import { prisma } from "../lib/prisma.js";
-import { moveToDLQ } from "./dlqService.js";
+import { prisma, TX_OPTIONS } from "../lib/prisma.js";
+import { upsertDeadLetter } from "./dlqService.js";
 
 export function calculateNextRetryTime(attemptCount: number): Date {
   // Exponential backoff: baseDelay * 2^(attemptCount - 1)
@@ -26,72 +26,73 @@ export function shouldRetry(attemptCount: number, maxAttempts: number): boolean 
   return willRetry;
 }
 
+export type FailureOutcome = "retrying" | "failed" | "lease-lost";
+
+/**
+ * Record a failed attempt, fenced by the claim token, in one transaction:
+ *   - attempts left → RETRYING with exponential backoff
+ *   - attempts exhausted → FAILED plus an open dead-letter row (inserted, or
+ *     reopened if this event was dead-lettered before)
+ * If the claim was taken over meanwhile, nothing is written ("lease-lost").
+ */
 export async function handleProcessingFailure(
   eventId: string,
+  claimToken: string,
   errorMessage: string,
-  attemptCount: number,
-  maxAttempts: number,
   eventType: string,
   payload: any
-): Promise<void> {
+): Promise<FailureOutcome> {
   try {
     logger.error(`[Retry] Event ${eventId} processing failed: ${errorMessage}`);
-    logger.info(`[Retry] Attempt ${attemptCount}/${maxAttempts}`);
 
-    // Add failure log entry
-    await prisma.eventLog.create({
-      data: {
-        eventId,
-        status: "FAILED_ATTEMPT",
-        message: `Attempt ${attemptCount} failed: ${errorMessage}`,
-      },
-    });
-
-    if (shouldRetry(attemptCount, maxAttempts)) {
-      // Schedule retry
-      const nextRetryAt = calculateNextRetryTime(attemptCount);
-
-      await prisma.event.update({
+    return await prisma.$transaction(async (tx) => {
+      const event = await tx.event.findUnique({
         where: { eventId },
-        data: {
-          status: "RETRYING",
-          lastError: errorMessage,
-          nextRetryAt,
-        },
+        select: { status: true, claimToken: true, attemptCount: true, maxAttempts: true },
       });
 
-      logger.info(
-        `[Retry] Event ${eventId} scheduled for retry at ${nextRetryAt.toISOString()}`
-      );
-    } else {
-      // Exhausted max attempts - move to DLQ
-      await prisma.event.update({
-        where: { eventId },
-        data: {
-          status: "FAILED",
-          lastError: errorMessage,
-          nextRetryAt: null,
-        },
-      });
-
-      await prisma.eventLog.create({
-        data: {
-          eventId,
-          status: "FAILED",
-          message: `Event failed after ${maxAttempts} attempts: ${errorMessage}`,
-        },
-      });
-
-      logger.error(`[Retry] Event ${eventId} reached maximum attempts (${maxAttempts})`);
-
-      // Move to DLQ
-      try {
-        await moveToDLQ(eventId, eventType, payload, errorMessage, attemptCount);
-      } catch (dlqError) {
-        logger.error(`[Retry] Failed to move event ${eventId} to DLQ`, dlqError);
-        throw dlqError;
+      if (!event || event.status !== "PROCESSING" || event.claimToken !== claimToken) {
+        logger.warn(`[Retry] Claim on ${eventId} was lost; leaving the failure to the current owner`);
+        return "lease-lost" as const;
       }
-    }
+
+      const { attemptCount, maxAttempts } = event;
+      logger.info(`[Retry] Attempt ${attemptCount}/${maxAttempts}`);
+      const fence = { eventId, status: "PROCESSING" as const, claimToken };
+
+      if (shouldRetry(attemptCount, maxAttempts)) {
+        const nextRetryAt = calculateNextRetryTime(attemptCount);
+        const { count } = await tx.event.updateMany({
+          where: fence,
+          data: { status: "RETRYING", lastError: errorMessage, nextRetryAt, claimToken: null, leaseExpiresAt: null },
+        });
+        if (count !== 1) return "lease-lost" as const;
+
+        await tx.eventLog.create({
+          data: { eventId, status: "FAILED_ATTEMPT", message: `Attempt ${attemptCount} failed: ${errorMessage}` },
+        });
+        logger.info(`[Retry] Event ${eventId} scheduled for retry at ${nextRetryAt.toISOString()}`);
+        return "retrying" as const;
+      }
+
+      // Exhausted max attempts: FAILED and dead-lettered atomically
+      const { count } = await tx.event.updateMany({
+        where: fence,
+        data: { status: "FAILED", lastError: errorMessage, nextRetryAt: null, claimToken: null, leaseExpiresAt: null },
+      });
+      if (count !== 1) return "lease-lost" as const;
+
+      await tx.eventLog.createMany({
+        data: [
+          { eventId, status: "FAILED_ATTEMPT", message: `Attempt ${attemptCount} failed: ${errorMessage}` },
+          { eventId, status: "FAILED", message: `Event failed after ${attemptCount} attempts: ${errorMessage}` },
+        ],
+      });
+      await upsertDeadLetter(tx, { eventId, eventType, payload, reason: errorMessage, attemptCount });
+
+      logger.error(`[Retry] Event ${eventId} reached maximum attempts (${maxAttempts}) and was dead-lettered`);
+      return "failed" as const;
+    }, TX_OPTIONS);
   } catch (error) {
     logger.error(`[Retry] Error handling processing failure for ${eventId}`, error);
     throw error;

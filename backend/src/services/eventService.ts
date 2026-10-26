@@ -1,4 +1,4 @@
-import { prisma } from "../lib/prisma.js";
+import { prisma, TX_OPTIONS } from "../lib/prisma.js";
 
 export interface CreateEventInput {
   eventId: string;
@@ -42,7 +42,7 @@ export async function createEvent(input: CreateEventInput) {
     });
 
     return event;
-  });
+  }, TX_OPTIONS);
 }
 
 export async function getEventByEventId(eventId: string) {

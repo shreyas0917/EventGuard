@@ -5,14 +5,9 @@ import {
   markEventCompletedInCache,
   isEventCompletedInCache,
 } from "../services/redisIdempotencyCache.js";
-import {
-  claimEventForProcessing,
-  markEventAsCompleted,
-  recordDuplicateDelivery,
-} from "../services/eventClaimService.js";
-import { creditWallet } from "../services/walletService.js";
+import { claimEventForProcessing, recordDuplicateDelivery } from "../services/eventClaimService.js";
+import { completeEvent } from "../services/eventCompletionService.js";
 import { handleProcessingFailure, shouldProcessFailSimulation } from "../services/retryService.js";
-import { config } from "../config/index.js";
 
 export interface KafkaEvent {
   eventId: string;
@@ -20,155 +15,62 @@ export interface KafkaEvent {
   payload: any;
 }
 
+export type ProcessOutcome = "completed" | "failed" | "lease-lost";
+
 const PROCESSING_DELAY_MS = parseInt(process.env.PROCESSING_DELAY_MS || "0", 10);
 
+const DUPLICATE_REASONS = {
+  "already-completed": "Duplicate - already completed",
+  "already-processing": "Duplicate - another worker holds the claim",
+  "already-failed": "Event previously failed",
+  "retry-scheduled": "Duplicate - retry already scheduled",
+} as const;
+
 export async function processEvent(kafkaMessage: KafkaEvent): Promise<void> {
-  const { eventId, eventType, payload } = kafkaMessage;
+  const { eventId } = kafkaMessage;
 
   try {
     logger.info(`[Worker] Received event: ${eventId}`);
 
     // STEP 1: Fast check using Redis cache (optimization only)
-    const cachedAsCompleted = await isEventCompletedInCache(eventId);
-    if (cachedAsCompleted) {
+    if (await isEventCompletedInCache(eventId)) {
       logger.info(`[Worker] Event in Redis completed cache: ${eventId}`);
-      await recordDuplicateDelivery(
-        eventId,
-        "Duplicate delivery - found in completed cache"
-      );
+      await recordDuplicateDelivery(eventId, "Duplicate delivery - found in completed cache");
       return;
     }
 
-    // STEP 2: Try to acquire Redis lock
-    // This prevents concurrent processing by multiple workers.
+    // STEP 2: Redis lock (coordination only).
     // Redis infrastructure failures throw RedisLockError (must not be treated as contention).
     const lockHandle = await acquireLock(eventId);
 
     if (!lockHandle.acquired) {
-      logger.info(
-        `[Worker] Redis lock contention for ${eventId} - another worker holds the lock`
-      );
-      await recordDuplicateDelivery(
-        eventId,
-        "Concurrent processing detected - Redis lock unavailable"
-      );
+      logger.info(`[Worker] Redis lock contention for ${eventId} - another worker holds the lock`);
+      await recordDuplicateDelivery(eventId, "Concurrent processing detected - Redis lock unavailable");
       // Normal contention: do not process. Offset may commit; the lock holder owns the work.
       return;
     }
 
     try {
-      // STEP 3: Attempt to claim the event in PostgreSQL
-      // This is the final idempotency guarantee
-      const claimResult = await claimEventForProcessing(eventId);
+      // STEP 3: Atomic claim in PostgreSQL - the durable gate. Exactly one caller wins.
+      const claim = await claimEventForProcessing(eventId);
 
-      if (claimResult === "already-completed") {
-        logger.info(`[Worker] Event already completed: ${eventId}`);
-        await recordDuplicateDelivery(eventId, "Duplicate - already completed");
-        // Update cache
-        await markEventCompletedInCache(eventId);
-        return;
-      }
-
-      if (claimResult === "already-processing") {
-        logger.info(`[Worker] Event already processing: ${eventId}`);
-        await recordDuplicateDelivery(
-          eventId,
-          "Duplicate - another worker processing"
-        );
-        return;
-      }
-
-      if (claimResult === "not-found") {
+      if (claim.outcome === "not-found") {
         logger.warn(`[Worker] Event not found: ${eventId}`);
         return;
       }
 
-      if (claimResult === "already-failed") {
-        logger.info(`[Worker] Event already failed: ${eventId}`);
-        await recordDuplicateDelivery(eventId, "Event previously failed");
+      if (claim.outcome !== "claimed") {
+        logger.info(`[Worker] Not claimable (${claim.outcome}): ${eventId}`);
+        await recordDuplicateDelivery(eventId, DUPLICATE_REASONS[claim.outcome]);
+        if (claim.outcome === "already-completed") {
+          await markEventCompletedInCache(eventId);
+        }
         return;
       }
 
-      // STEP 4: Event has been claimed for processing
-      if (claimResult !== "claimed") {
-        logger.error(`[Worker] Unexpected claim result: ${claimResult}`);
-        return;
-      }
-
-      logger.info(`[Worker] Event claimed for processing: ${eventId}`);
-
-      // Add EventLog entry for PROCESSING
-      await prisma.eventLog.create({
-        data: {
-          eventId,
-          status: "PROCESSING",
-          message: "Event processing started",
-        },
-      });
-
-      // STEP 5: Process the event based on type
-      logger.info(`[Worker] Processing event: ${eventId} (type: ${eventType})`);
-
-      // Check for test failure simulation
-      if (await shouldProcessFailSimulation(eventId)) {
-        throw new Error("Intentional failure simulation for testing retry mechanism");
-      }
-
-      // Handle PAYMENT_SUCCESS events with wallet credit business logic
-      if (eventType === "PAYMENT_SUCCESS") {
-        await handlePaymentSuccessEvent(eventId, payload);
-      }
-
-      // Simulate processing with optional delay for testing
-      await simulateProcessing(PROCESSING_DELAY_MS);
-
-      // STEP 6: Mark as completed in database
-      const now = new Date();
-      await markEventAsCompleted(eventId, now);
-
-      // Add EventLog entry for COMPLETED
-      await prisma.eventLog.create({
-        data: {
-          eventId,
-          status: "COMPLETED",
-          message: "Event processing completed",
-        },
-      });
-
-      // STEP 7: Mark as completed in Redis cache
-      await markEventCompletedInCache(eventId);
-
-      logger.info(`[Worker] Event completed: ${eventId}`);
-    } catch (error) {
-      // STEP 5B: Handle processing failure
-      const event = await prisma.event.findUnique({
-        where: { eventId },
-      });
-
-      if (!event) {
-        logger.error(`[Worker] Event not found during error handling: ${eventId}`);
-        throw error;
-      }
-
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      const attemptCount = event.attemptCount;
-      const maxAttempts = event.maxAttempts;
-
-      logger.error(
-        `[Worker] Processing failed for ${eventId} on attempt ${attemptCount}/${maxAttempts}: ${errorMessage}`
-      );
-
-      try {
-        await handleProcessingFailure(eventId, errorMessage, attemptCount, maxAttempts, eventType, payload);
-      } catch (retryError) {
-        logger.error(`[Worker] Error handling processing failure for ${eventId}`, retryError);
-      }
-
-      // Don't re-throw - let the system handle this failure
-      // Re-throwing would cause Kafka to redeliver, which we don't want
-      // We want the application-level retry mechanism to take over
+      await processClaimedEvent(kafkaMessage, claim.claimToken);
     } finally {
-      // STEP 8: Always release the lock (if acquired)
+      // Always release the lock (if acquired)
       await releaseLock(lockHandle);
     }
   } catch (error) {
@@ -177,50 +79,59 @@ export async function processEvent(kafkaMessage: KafkaEvent): Promise<void> {
   }
 }
 
+/**
+ * Run an event this worker has claimed. The business effect and COMPLETED commit
+ * together, fenced by the claim token; failures are recorded under the same fence.
+ *
+ * Failures are handled here rather than rethrown: rethrowing would make Kafka
+ * redeliver immediately, while the retry worker applies backoff. If even recording
+ * the failure fails (database down), the claim's lease expires and the retry
+ * worker recovers the event.
+ */
+export async function processClaimedEvent(event: KafkaEvent, claimToken: string): Promise<ProcessOutcome> {
+  const { eventId, eventType, payload } = event;
+
+  try {
+    await prisma.eventLog.create({
+      data: { eventId, status: "PROCESSING", message: "Event processing started" },
+    });
+
+    logger.info(`[Worker] Processing event: ${eventId} (type: ${eventType})`);
+
+    // Check for test failure simulation
+    if (await shouldProcessFailSimulation(eventId)) {
+      throw new Error("Intentional failure simulation for testing retry mechanism");
+    }
+
+    // Simulate processing with optional delay for testing (outside any transaction)
+    await simulateProcessing(PROCESSING_DELAY_MS);
+
+    const completed = await completeEvent(event, claimToken);
+    if (!completed) {
+      logger.warn(`[Worker] Claim on ${eventId} expired and was taken over; nothing written`);
+      return "lease-lost";
+    }
+
+    await markEventCompletedInCache(eventId);
+    logger.info(`[Worker] Event completed: ${eventId}`);
+    return "completed";
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.error(`[Worker] Processing failed for ${eventId}: ${errorMessage}`);
+
+    try {
+      const outcome = await handleProcessingFailure(eventId, claimToken, errorMessage, eventType, payload);
+      return outcome === "lease-lost" ? "lease-lost" : "failed";
+    } catch (retryError) {
+      logger.error(`[Worker] Error handling processing failure for ${eventId}`, retryError);
+      return "failed";
+    }
+  }
+}
+
 async function simulateProcessing(delayMs: number): Promise<void> {
   if (delayMs > 0) {
     logger.debug(`[Worker] Processing delay: ${delayMs}ms`);
     return new Promise((resolve) => setTimeout(resolve, delayMs));
-  }
-  // Minimal delay to represent work
-  return new Promise((resolve) => setTimeout(resolve, 50));
-}
-
-async function handlePaymentSuccessEvent(eventId: string, payload: any): Promise<void> {
-  const { userId, paymentId, orderId, amount } = payload;
-
-  if (!userId || !paymentId || !orderId || !amount) {
-    logger.error(`[Worker] Invalid PAYMENT_SUCCESS payload for ${eventId}`, payload);
-    throw new Error(`Invalid PAYMENT_SUCCESS payload for ${eventId}`);
-  }
-
-  logger.info(`[Worker] Processing payment ${paymentId} for user ${userId}, amount: ${amount}`);
-
-  try {
-    // Credit wallet with atomic transaction - UNIQUE constraint protects against duplicates
-    const result = await creditWallet(userId, amount, eventId, "Payment received");
-
-    logger.info(
-      `[Worker] Wallet credited: ${result.walletTransaction.id}, ` +
-      `new balance: ${result.wallet.balance}`
-    );
-
-    // Add EventLog entry for wallet credit
-    await prisma.eventLog.create({
-      data: {
-        eventId,
-        status: "WALLET_CREDITED",
-        message: `Wallet credited: ${amount}, transaction: ${result.walletTransaction.id}`,
-      },
-    });
-  } catch (error) {
-    if (error instanceof Error && error.message.includes("Unique constraint")) {
-      // UNIQUE constraint violation means duplicate event
-      logger.info(`[Worker] Duplicate payment event ${eventId} - WalletTransaction.eventId UNIQUE constraint`);
-      await recordDuplicateDelivery(eventId, "Duplicate - WalletTransaction.eventId UNIQUE constraint");
-    } else {
-      logger.error(`[Worker] Failed to credit wallet for event ${eventId}`, error);
-      throw error;
-    }
   }
 }

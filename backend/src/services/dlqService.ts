@@ -1,44 +1,31 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 
-export async function moveToDLQ(
-  eventId: string,
-  eventType: string,
-  payload: any,
-  reason: string,
-  attemptCount: number
-): Promise<void> {
-  try {
-    // Use transaction to ensure atomic DLQ creation with event update
-    await prisma.$transaction(async (tx) => {
-      // Create DLQ record
-      await tx.deadLetterEvent.create({
-        data: {
-          eventId,
-          eventType,
-          payload,
-          reason,
-          attemptCount,
-          status: "PENDING",
-          failedAt: new Date(),
-        },
-      });
+export interface DeadLetterInput {
+  eventId: string;
+  eventType: string;
+  payload: any;
+  reason: string;
+  attemptCount: number;
+}
 
-      logger.info(`[DLQ] Event ${eventId} moved to DLQ after ${attemptCount} attempts`);
-    });
-
-    // Add EventLog entry
-    await prisma.eventLog.create({
-      data: {
-        eventId,
-        status: "DLQ_CREATED",
-        message: `Event moved to DLQ: ${reason}`,
-      },
-    });
-  } catch (error) {
-    logger.error(`[DLQ] Error moving event ${eventId} to DLQ`, error);
-    throw error;
-  }
+/**
+ * Open a dead-letter entry inside the caller's transaction. An event that was
+ * dead-lettered before (and replayed or retried) reopens its existing row instead
+ * of colliding with dead_letter_events.eventId UNIQUE.
+ */
+export async function upsertDeadLetter(tx: Prisma.TransactionClient, input: DeadLetterInput): Promise<void> {
+  const failedAt = new Date();
+  await tx.deadLetterEvent.upsert({
+    where: { eventId: input.eventId },
+    create: { ...input, status: "PENDING", failedAt },
+    update: { reason: input.reason, attemptCount: input.attemptCount, status: "PENDING", failedAt },
+  });
+  await tx.eventLog.create({
+    data: { eventId: input.eventId, status: "DLQ_CREATED", message: `Event moved to DLQ: ${input.reason}` },
+  });
+  logger.info(`[DLQ] Event ${input.eventId} moved to DLQ after ${input.attemptCount} attempts`);
 }
 
 export async function getDLQEvents(status?: string): Promise<any[]> {
@@ -70,14 +57,32 @@ export async function getDLQEvent(eventId: string): Promise<any> {
   }
 }
 
-export async function startReplay(eventId: string): Promise<void> {
+/** A REPLAYING entry untouched this long is treated as abandoned (the replaying process died). */
+const STALE_REPLAY_MS = 5 * 60 * 1000;
+
+/**
+ * Atomically move a dead-letter entry to REPLAYING. Returns false if another
+ * replay holds it (or it is resolved), so concurrent replay requests cannot
+ * both run.
+ */
+export async function startReplay(eventId: string): Promise<boolean> {
   try {
-    await prisma.deadLetterEvent.update({
-      where: { eventId },
+    const { count } = await prisma.deadLetterEvent.updateMany({
+      where: {
+        eventId,
+        OR: [
+          { status: "PENDING" },
+          { status: "REPLAYING", updatedAt: { lt: new Date(Date.now() - STALE_REPLAY_MS) } },
+        ],
+      },
       data: {
         status: "REPLAYING",
       },
     });
+
+    if (count !== 1) {
+      return false;
+    }
 
     await prisma.eventLog.create({
       data: {
@@ -88,6 +93,7 @@ export async function startReplay(eventId: string): Promise<void> {
     });
 
     logger.info(`[DLQ] Replay started for event ${eventId}`);
+    return true;
   } catch (error) {
     logger.error(`[DLQ] Error starting replay for ${eventId}`, error);
     throw error;

@@ -1,4 +1,4 @@
-import { prisma } from "../lib/prisma.js";
+import { prisma, TX_OPTIONS } from "../lib/prisma.js";
 import { getRazorpay, getRazorpayKeySecret } from "../lib/razorpay.js";
 import { logger } from "../lib/logger.js";
 import crypto from "crypto";
@@ -180,7 +180,7 @@ export async function ensurePaymentSuccessEvent(
       eventCreated: true,
       alreadyPaid,
     };
-  });
+  }, TX_OPTIONS);
 }
 
 export async function createPaymentOrder(request: CreateOrderRequest): Promise<any> {

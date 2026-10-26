@@ -80,10 +80,12 @@ export const authRateLimit = rateLimit({
   maxRequests: 10, // slows down admin-key guessing on demo login
 });
 
+// Per sender IP, not one global bucket: a single shared key capped ALL webhooks at
+// 60/min, i.e. one payment per second. Authenticity is enforced by HMAC; this is only
+// abuse protection, so the default leaves room for real payment bursts.
 export const webhookRateLimit = rateLimit({
   windowMs: 60 * 1000, // 1 minute
-  maxRequests: 60, // 60 webhooks per minute (allow Razorpay retries)
-  keyGenerator: (req: Request) => "webhook",
+  maxRequests: config.webhook_rate_limit_max_requests,
 });
 
 /**

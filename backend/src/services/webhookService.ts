@@ -275,23 +275,31 @@ export async function verifyAndStoreWebhook(
     // Normalize so downstream handlers can rely on payload.event_id
     payload.event_id = razorpayEventId;
 
-    // Check for duplicate webhook (idempotency level 1)
-    const isDuplicate = await isWebhookProcessed(razorpayEventId);
+    // Idempotency level 1: a delivery that finished (PROCESSED/IGNORED) is a duplicate.
+    // One stuck in RECEIVED or FAILED is processed again: the API may have crashed after
+    // storing it, and the downstream ensurePaymentSuccessEvent() is idempotent.
+    const existing = await prisma.webhookEvent.findUnique({ where: { razorpayEventId } });
 
-    if (isDuplicate) {
+    if (existing && (existing.status === "PROCESSED" || existing.status === "IGNORED")) {
       logger.warn(`[Webhook] Duplicate webhook ignored: ${razorpayEventId}`);
       return { verified: false, reason: "duplicate" };
     }
 
-    // Store webhook record with RECEIVED status
-    const webhook = await createWebhookRecord(
-      razorpayEventId,
-      eventType,
-      paymentId,
-      payload
-    );
+    if (existing) {
+      logger.info(`[Webhook] Reprocessing unfinished delivery ${razorpayEventId} (status=${existing.status})`);
+      return { verified: true, webhook: existing, payload };
+    }
 
-    return { verified: true, webhook, payload };
+    // Store webhook record with RECEIVED status. Two simultaneous deliveries can both get
+    // here; the loser of the UNIQUE race continues with the winner's record.
+    try {
+      const webhook = await createWebhookRecord(razorpayEventId, eventType, paymentId, payload);
+      return { verified: true, webhook, payload };
+    } catch (error: any) {
+      if (error?.code !== "P2002") throw error;
+      const winner = await prisma.webhookEvent.findUniqueOrThrow({ where: { razorpayEventId } });
+      return { verified: true, webhook: winner, payload };
+    }
   } catch (error) {
     logger.error("[Webhook] Error verifying webhook", error);
     return { verified: false, reason: "error" };

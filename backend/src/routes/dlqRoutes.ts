@@ -102,15 +102,14 @@ router.post("/:eventId/replay", validate({ params: eventIdParams }), async (req,
       });
     }
 
-    if (dlqEvent.status === "REPLAYING") {
+    // Atomic PENDING → REPLAYING: of several concurrent requests, exactly one proceeds
+    const started = await startReplay(eventId);
+    if (!started) {
       return res.status(409).json({
         success: false,
         error: "Replay already in progress",
       });
     }
-
-    // Start replay - mark as REPLAYING
-    await startReplay(eventId);
 
     try {
       // Replay the event using existing processEvent function

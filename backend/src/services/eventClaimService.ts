@@ -1,86 +1,105 @@
+import { randomUUID } from "crypto";
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
+import { config } from "../config/index.js";
 
 export type EventClaimResult =
-  | "claimed"
-  | "already-processing"
-  | "already-completed"
-  | "already-failed"
-  | "not-found"
-  | "retrying";
+  | { outcome: "claimed"; claimToken: string }
+  | { outcome: "already-processing" }
+  | { outcome: "already-completed" }
+  | { outcome: "already-failed" }
+  | { outcome: "retry-scheduled" }
+  | { outcome: "not-found" };
 
-export async function claimEventForProcessing(
-  eventId: string
-): Promise<EventClaimResult> {
-  try {
-    // Check current event status
-    const event = await prisma.event.findUnique({
-      where: { eventId },
-    });
+function leaseExpiry(from: Date = new Date()): Date {
+  return new Date(from.getTime() + config.event_lease_seconds * 1000);
+}
 
-    if (!event) {
+/**
+ * Atomically claim an event for processing.
+ *
+ * One conditional UPDATE moves the event to PROCESSING, stamps a fresh fencing
+ * token and a lease, and bumps attemptCount. PostgreSQL re-checks the WHERE clause
+ * after waiting on the row lock, so among any number of concurrent callers exactly
+ * one gets count = 1. Claimable states:
+ *   - RECEIVED
+ *   - RETRYING whose backoff has elapsed
+ *   - PROCESSING whose lease expired (the previous worker crashed or stalled)
+ */
+export async function claimEventForProcessing(eventId: string): Promise<EventClaimResult> {
+  const now = new Date();
+  const claimToken = randomUUID();
+
+  const { count } = await prisma.event.updateMany({
+    where: {
+      eventId,
+      OR: [
+        { status: "RECEIVED" },
+        { status: "RETRYING", OR: [{ nextRetryAt: null }, { nextRetryAt: { lte: now } }] },
+        { status: "PROCESSING", OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lt: now } }] },
+      ],
+    },
+    data: {
+      status: "PROCESSING",
+      attemptCount: { increment: 1 },
+      claimToken,
+      leaseExpiresAt: leaseExpiry(now),
+      nextRetryAt: null,
+    },
+  });
+
+  if (count === 1) {
+    logger.info(`[Idempotency] Event claimed for processing: ${eventId}`);
+    return { outcome: "claimed", claimToken };
+  }
+
+  // Lost the race or not claimable: report why, for the duplicate log
+  const event = await prisma.event.findUnique({ where: { eventId }, select: { status: true } });
+  switch (event?.status) {
+    case undefined:
       logger.warn(`[Idempotency] Event not found: ${eventId}`);
-      return "not-found";
-    }
-
-    // Check if already completed
-    if (event.status === "COMPLETED") {
-      logger.info(`[Idempotency] Event already completed: ${eventId}`);
-      return "already-completed";
-    }
-
-    // Check if already processing
-    if (event.status === "PROCESSING") {
-      logger.info(`[Idempotency] Event already processing: ${eventId}`);
-      return "already-processing";
-    }
-
-    // Check if permanently failed
-    if (event.status === "FAILED") {
-      logger.info(`[Idempotency] Event already failed: ${eventId}`);
-      return "already-failed";
-    }
-
-    // Attempt to claim: RECEIVED → PROCESSING or RETRYING → PROCESSING
-    // Use transaction to ensure atomicity
-    const updated = await prisma.event.update({
-      where: { eventId },
-      data: {
-        status: "PROCESSING",
-        attemptCount: { increment: 1 },
-      },
-    });
-
-    if (updated.status === "PROCESSING" || updated.status === "RETRYING") {
-      logger.info(`[Idempotency] Event claimed for processing: ${eventId}`);
-      return "claimed";
-    }
-
-    return "already-processing";
-  } catch (error) {
-    logger.error(`[Idempotency] Error claiming event ${eventId}`, error);
-    throw error;
+      return { outcome: "not-found" };
+    case "COMPLETED":
+      return { outcome: "already-completed" };
+    case "FAILED":
+      return { outcome: "already-failed" };
+    case "RETRYING":
+      return { outcome: "retry-scheduled" };
+    default:
+      return { outcome: "already-processing" };
   }
 }
 
-export async function markEventAsCompleted(
-  eventId: string,
-  processedAt: Date = new Date()
-): Promise<void> {
-  try {
-    await prisma.event.update({
-      where: { eventId },
-      data: {
-        status: "COMPLETED",
-        processedAt,
-      },
-    });
+/**
+ * DLQ replay: reopen a FAILED event for exactly one more attempt. Claims it
+ * directly (FAILED → PROCESSING) so no other worker can pick it up in between.
+ * Returns the claim token, or null if the event is not FAILED.
+ */
+export async function claimFailedEventForReplay(eventId: string): Promise<string | null> {
+  const event = await prisma.event.findUnique({ where: { eventId }, select: { maxAttempts: true } });
+  if (!event) return null;
 
-    logger.info(`[Idempotency] Event marked as completed: ${eventId}`);
-  } catch (error) {
-    logger.error(`[Idempotency] Error marking event as completed ${eventId}`, error);
-    throw error;
-  }
+  const claimToken = randomUUID();
+  const { count } = await prisma.event.updateMany({
+    where: { eventId, status: "FAILED" },
+    data: {
+      status: "PROCESSING",
+      // The replay is the final attempt: a failure goes straight back to FAILED + DLQ
+      attemptCount: event.maxAttempts,
+      claimToken,
+      leaseExpiresAt: leaseExpiry(),
+      nextRetryAt: null,
+      lastError: null,
+    },
+  });
+
+  if (count !== 1) return null;
+
+  await prisma.eventLog.create({
+    data: { eventId, status: "REPLAY_PREPARED", message: "Event reopened from FAILED for one replay attempt" },
+  });
+  logger.info(`[DLQ] Event ${eventId} claimed for replay (FAILED → PROCESSING)`);
+  return claimToken;
 }
 
 export async function recordDuplicateDelivery(
@@ -119,60 +138,25 @@ export async function getEventStatus(
   }
 }
 
-export async function markEventAsRetrying(
-  eventId: string,
-  errorMessage: string,
-  nextRetryAt: Date
-): Promise<void> {
+/**
+ * Manual retry of a FAILED event: schedule it for the retry worker now.
+ * Conditional on FAILED, so it cannot clobber an event that moved on meanwhile.
+ * Returns false if the event was not FAILED.
+ */
+export async function resetEventForRetry(eventId: string): Promise<boolean> {
   try {
-    await prisma.event.update({
-      where: { eventId },
-      data: {
-        status: "RETRYING",
-        lastError: errorMessage,
-        nextRetryAt,
-      },
-    });
-
-    logger.info(`[Retry] Event ${eventId} marked as RETRYING, next retry at ${nextRetryAt.toISOString()}`);
-  } catch (error) {
-    logger.error(`[Retry] Error marking event as retrying ${eventId}`, error);
-    throw error;
-  }
-}
-
-export async function markEventAsFailed(
-  eventId: string,
-  errorMessage: string
-): Promise<void> {
-  try {
-    await prisma.event.update({
-      where: { eventId },
-      data: {
-        status: "FAILED",
-        lastError: errorMessage,
-        nextRetryAt: null,
-      },
-    });
-
-    logger.info(`[Retry] Event ${eventId} marked as FAILED after max attempts`);
-  } catch (error) {
-    logger.error(`[Retry] Error marking event as failed ${eventId}`, error);
-    throw error;
-  }
-}
-
-export async function resetEventForRetry(eventId: string): Promise<void> {
-  try {
-    await prisma.event.update({
-      where: { eventId },
+    const { count } = await prisma.event.updateMany({
+      where: { eventId, status: "FAILED" },
       data: {
         status: "RETRYING",
         nextRetryAt: new Date(),
       },
     });
 
-    logger.info(`[Retry] Event ${eventId} reset for manual retry`);
+    if (count === 1) {
+      logger.info(`[Retry] Event ${eventId} reset for manual retry`);
+    }
+    return count === 1;
   } catch (error) {
     logger.error(`[Retry] Error resetting event for retry ${eventId}`, error);
     throw error;
@@ -180,66 +164,31 @@ export async function resetEventForRetry(eventId: string): Promise<void> {
 }
 
 /**
- * Explicit DLQ replay reopen.
- * Only FAILED events may be reopened; normal claim still treats FAILED as terminal.
+ * Events the retry worker should run now: retries whose backoff elapsed, and
+ * PROCESSING events whose lease expired because their worker died mid-flight.
  */
-export async function prepareEventForDlqReplay(eventId: string): Promise<void> {
-  try {
-    const event = await prisma.event.findUnique({ where: { eventId } });
-
-    if (!event) {
-      throw new Error(`Event not found for DLQ replay: ${eventId}`);
-    }
-
-    if (event.status !== "FAILED") {
-      throw new Error(
-        `DLQ replay requires FAILED status, found ${event.status} for ${eventId}`
-      );
-    }
-
-    await prisma.event.update({
-      where: { eventId },
-      data: {
-        status: "RETRYING",
-        nextRetryAt: new Date(),
-        lastError: null,
-        // Fresh attempt budget so replay can run through the normal pipeline
-        attemptCount: 0,
-      },
-    });
-
-    await prisma.eventLog.create({
-      data: {
-        eventId,
-        status: "REPLAY_PREPARED",
-        message: "Event reopened from FAILED for DLQ replay",
-      },
-    });
-
-    logger.info(`[DLQ] Event ${eventId} prepared for replay (FAILED → RETRYING)`);
-  } catch (error) {
-    logger.error(`[DLQ] Error preparing event ${eventId} for replay`, error);
-    throw error;
-  }
-}
-
-export async function getRetryableEvents(): Promise<any[]> {
+export async function getRetryableEvents(limit: number = 50): Promise<any[]> {
   try {
     const now = new Date();
     const events = await prisma.event.findMany({
       where: {
-        status: "RETRYING",
-        nextRetryAt: { lte: now },
+        OR: [
+          { status: "RETRYING", nextRetryAt: { lte: now } },
+          { status: "PROCESSING", leaseExpiresAt: { lt: now } },
+        ],
       },
       select: {
         eventId: true,
         eventType: true,
         payload: true,
+        status: true,
         attemptCount: true,
         maxAttempts: true,
         lastError: true,
         nextRetryAt: true,
       },
+      orderBy: { updatedAt: "asc" },
+      take: limit,
     });
 
     return events;

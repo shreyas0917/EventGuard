@@ -42,6 +42,7 @@ export async function connectRedis() {
     redisInstance = new Redis({
       host: config.redis_host,
       port: config.redis_port,
+      db: config.redis_db,
       retryStrategy: (times) => Math.min(times * 50, 2000),
       // Fail commands immediately when disconnected so lock acquisition can
       // distinguish Redis outage from normal lock contention (do not queue forever).

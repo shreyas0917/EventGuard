@@ -106,8 +106,14 @@ router.post("/:eventId/retry", validate({ params: eventIdParams }), async (req: 
       return;
     }
 
-    // Reset the event for retry
-    await resetEventForRetry(eventId);
+    // Reset the event for retry (conditional on FAILED, so a concurrent change wins cleanly)
+    const reset = await resetEventForRetry(eventId);
+    if (!reset) {
+      res.status(409).json({
+        error: "Event changed state; only FAILED events can be manually retried",
+      });
+      return;
+    }
 
     // Add audit log
     await prisma.eventLog.create({

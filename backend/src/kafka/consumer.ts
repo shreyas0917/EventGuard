@@ -1,42 +1,41 @@
 import { Consumer, EachMessagePayload } from "kafkajs";
 import { getKafka } from "../lib/kafka.js";
 import { logger } from "../lib/logger.js";
+import { config } from "../config/index.js";
 import { processEvent } from "./eventWorker.js";
 
 let consumer: Consumer | null = null;
 
-export async function initializeConsumer(): Promise<void> {
-  if (consumer) {
-    logger.debug("Consumer already initialized");
-    return;
-  }
+export interface EventConsumerOptions {
+  groupId?: string;
+  topic?: string;
+  fromBeginning?: boolean;
+}
+
+/**
+ * Create, connect and subscribe a consumer that runs every message through
+ * processEvent(). The app runs one; tests create several to simulate competing
+ * deployments. Call run() on the result to start consuming.
+ */
+export async function createEventConsumer(options: EventConsumerOptions = {}): Promise<Consumer> {
+  const groupId = options.groupId ?? config.kafka_consumer_group;
+  const topic = options.topic ?? config.kafka_topic;
 
   const kafka = getKafka();
-  consumer = kafka.consumer({
-    groupId: "eventguard-workers",
+  const created = kafka.consumer({
+    groupId,
     sessionTimeout: 30000,
     rebalanceTimeout: 60000,
   });
 
-  await consumer.connect();
-  logger.info("[Kafka] Consumer connected");
+  await created.connect();
+  await created.subscribe({ topic, fromBeginning: options.fromBeginning ?? false });
+  logger.info(`[Kafka] Consumer in group ${groupId} subscribed to ${topic}`);
+  return created;
 }
 
-export async function subscribeToEvents(): Promise<void> {
-  if (!consumer) {
-    throw new Error("Consumer not initialized. Call initializeConsumer() first.");
-  }
-
-  await consumer.subscribe({ topic: "eventguard.events" });
-  logger.info("[Kafka] Consumer subscribed to eventguard.events");
-}
-
-export async function startConsumer(): Promise<void> {
-  if (!consumer) {
-    throw new Error("Consumer not initialized. Call initializeConsumer() first.");
-  }
-
-  await consumer.run({
+export async function runEventConsumer(target: Consumer): Promise<void> {
+  await target.run({
     eachMessage: async (payload: EachMessagePayload) => {
       try {
         await handleMessage(payload);
@@ -48,12 +47,36 @@ export async function startConsumer(): Promise<void> {
       }
     },
   });
+}
 
+export async function initializeConsumer(): Promise<void> {
+  if (consumer) {
+    logger.debug("Consumer already initialized");
+    return;
+  }
+
+  consumer = await createEventConsumer();
+  logger.info("[Kafka] Consumer connected");
+}
+
+export async function subscribeToEvents(): Promise<void> {
+  if (!consumer) {
+    throw new Error("Consumer not initialized. Call initializeConsumer() first.");
+  }
+  // Subscription happens in createEventConsumer(); kept for the worker's lifecycle API.
+}
+
+export async function startConsumer(): Promise<void> {
+  if (!consumer) {
+    throw new Error("Consumer not initialized. Call initializeConsumer() first.");
+  }
+
+  await runEventConsumer(consumer);
   logger.info("[Kafka] Consumer started processing messages");
 }
 
-async function handleMessage(payload: EachMessagePayload): Promise<void> {
-  const { topic, partition, message } = payload;
+export async function handleMessage(payload: EachMessagePayload): Promise<void> {
+  const { partition, message } = payload;
 
   if (!message.value || !message.key) {
     logger.warn("[Kafka] Received message without value or key");

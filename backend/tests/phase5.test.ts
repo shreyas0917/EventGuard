@@ -208,14 +208,14 @@ async function runPhase5Tests() {
     });
 
     // Claim event
-    const claimResult1 = await claimEventForProcessing("evt_phase5_006");
+    const claimResult1 = (await claimEventForProcessing("evt_phase5_006")).outcome;
 
     if (claimResult1 !== "claimed") {
       throw new Error("First claim should succeed");
     }
 
     // Try to claim again (should fail)
-    const claimResult2 = await claimEventForProcessing("evt_phase5_006");
+    const claimResult2 = (await claimEventForProcessing("evt_phase5_006")).outcome;
 
     if (claimResult2 !== "already-processing") {
       throw new Error(`Second claim should return already-processing, got ${claimResult2}`);
@@ -354,8 +354,8 @@ async function runPhase5Tests() {
     });
 
     // Simulate two workers trying to claim the same event
-    const worker1Claim = await claimEventForProcessing("evt_phase5_010");
-    const worker2Claim = await claimEventForProcessing("evt_phase5_010");
+    const worker1Claim = (await claimEventForProcessing("evt_phase5_010")).outcome;
+    const worker2Claim = (await claimEventForProcessing("evt_phase5_010")).outcome;
 
     if (worker1Claim !== "claimed") {
       throw new Error("Worker 1 should claim successfully");

@@ -1,7 +1,8 @@
 import { getKafka } from "../lib/kafka.js";
 import { logger } from "../lib/logger.js";
+import { config } from "../config/index.js";
 
-const TOPIC_NAME = "eventguard.events";
+const TOPIC_NAME = config.kafka_topic;
 const NUM_PARTITIONS = 3;
 const REPLICATION_FACTOR = 1;
 

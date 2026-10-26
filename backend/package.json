@@ -16,7 +16,8 @@
     "test:phase5": "tsx tests/phase5.test.ts",
     "test:phase6": "tsx tests/phase6.test.ts",
     "lint": "eslint src --ext .ts",
-    "test:security": "vitest run tests/security"
+    "test:security": "vitest run tests/security",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "keywords": [],
   "author": "",

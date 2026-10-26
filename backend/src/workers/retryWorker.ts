@@ -24,7 +24,9 @@ export function startRetryWorker(intervalMs: number = config.retry_poll_interval
 
         for (const event of retryableEvents) {
           logger.info(
-            `[RetryWorker] Retrying event ${event.eventId} (attempt ${event.attemptCount}/${event.maxAttempts})`
+            event.status === "PROCESSING"
+              ? `[RetryWorker] Recovering event ${event.eventId}: its processing lease expired`
+              : `[RetryWorker] Retrying event ${event.eventId} (attempt ${event.attemptCount}/${event.maxAttempts})`
           );
 
           try {
