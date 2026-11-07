@@ -44,7 +44,8 @@ export async function getWallet(userId: string): Promise<any> {
 /**
  * Credit a wallet inside the caller's transaction: insert the ledger row (UNIQUE on
  * eventId) and increment the balance in the same statement batch, so the two can
- * never diverge. Throws if the wallet does not exist or the eventId was already used.
+ * never diverge. The wallet is created on demand if the user never called
+ * POST /api/wallets. Throws only if the eventId was already used.
  */
 export async function creditWalletInTx(
   tx: Prisma.TransactionClient,
@@ -53,13 +54,18 @@ export async function creditWalletInTx(
   eventId: string,
   reason: string = "Payment received"
 ) {
-  const wallet = await tx.wallet.findUnique({
+  // Create the wallet if it does not exist yet. ON CONFLICT DO NOTHING is safe under
+  // concurrent first payments: the unique index on userId serializes the inserts, and
+  // every caller then reads the single committed row. A P2002-throwing create/upsert
+  // could not be caught here because a constraint error aborts the whole transaction.
+  await tx.$executeRaw`
+    INSERT INTO "wallets" ("id", "userId", "balance", "createdAt", "updatedAt")
+    VALUES (gen_random_uuid(), ${userId}, 0, NOW(), NOW())
+    ON CONFLICT ("userId") DO NOTHING`;
+
+  const wallet = await tx.wallet.findUniqueOrThrow({
     where: { userId },
   });
-
-  if (!wallet) {
-    throw new Error(`Wallet not found for user: ${userId}`);
-  }
 
   // Create wallet transaction with UNIQUE constraint on eventId
   const walletTransaction = await tx.walletTransaction.create({

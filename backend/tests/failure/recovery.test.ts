@@ -100,27 +100,24 @@ describe("retry exhaustion and dead-letter replay", () => {
   });
 });
 
-describe("transaction rollback", () => {
-  it("a failure inside the credit transaction leaves no ledger row and no COMPLETED status; the retry pays once", async () => {
-    config.retry_base_delay_ms = 100;
-    const message = await db.seedPaymentEvent("evt_rollback", "user_late_wallet", 25);
+describe("payment for a user with no wallet", () => {
+  it("auto-creates the wallet through the pipeline, credits once, and does not dead-letter", async () => {
+    const message = await db.seedPaymentEvent("evt_nowallet", "user_no_wallet", 25);
+    // The user never called POST /api/wallets
+    expect(await prisma.wallet.findUnique({ where: { userId: "user_no_wallet" } })).toBeNull();
 
-    // No wallet yet: the fenced UPDATE to COMPLETED runs first, then the credit throws
     await processEvent(message);
 
-    const event = await prisma.event.findUniqueOrThrow({ where: { eventId: "evt_rollback" } });
-    expect(event.status).toBe("RETRYING");
-    expect(event.lastError).toMatch(/Wallet not found/);
-    expect(await prisma.walletTransaction.count()).toBe(0);
-    expect(await prisma.eventLog.count({ where: { eventId: "evt_rollback", status: "COMPLETED" } })).toBe(0);
-
-    await db.seedWallet("user_late_wallet");
-    await sleep(200);
-    expect(await runRetryCycle()).toBe(1);
-
-    expect((await prisma.event.findUniqueOrThrow({ where: { eventId: "evt_rollback" } })).status).toBe("COMPLETED");
-    expect(await db.walletBalance("user_late_wallet")).toBe("25.00");
+    expect((await prisma.event.findUniqueOrThrow({ where: { eventId: "evt_nowallet" } })).status).toBe("COMPLETED");
+    expect(await prisma.wallet.count({ where: { userId: "user_no_wallet" } })).toBe(1);
+    expect(await prisma.walletTransaction.count({ where: { eventId: "evt_nowallet" } })).toBe(1);
+    expect(await db.walletBalance("user_no_wallet")).toBe("25.00");
+    expect(await prisma.deadLetterEvent.count()).toBe(0);
     expect(await db.ledgerViolations()).toEqual([]);
+
+    // A redelivery is still a no-op duplicate
+    await processEvent(message);
+    expect(await prisma.walletTransaction.count({ where: { eventId: "evt_nowallet" } })).toBe(1);
   });
 });
 

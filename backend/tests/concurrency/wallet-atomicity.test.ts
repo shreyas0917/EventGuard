@@ -35,8 +35,30 @@ describe("wallet credit atomicity", () => {
     expect(await db.ledgerViolations()).toEqual([]);
   });
 
-  it("a failed credit leaves neither a ledger row nor a balance change", async () => {
-    await expect(creditWallet("no_such_user", 10, "evt_orphan")).rejects.toThrow(/Wallet not found/);
+  it("a failed credit (negative amount) rolls back the auto-created wallet and leaves nothing", async () => {
+    // The CHECK constraint rejects a non-positive ledger amount; the whole transaction,
+    // including the on-demand wallet insert, must roll back.
+    await expect(creditWallet("rollback_user", -5, "evt_orphan")).rejects.toThrow();
+    expect(await prisma.wallet.findUnique({ where: { userId: "rollback_user" } })).toBeNull();
     expect(await prisma.walletTransaction.count()).toBe(0);
+  });
+
+  it("credits a user who has no wallet yet: the wallet is created with the credited balance", async () => {
+    const result = await creditWallet("brand_new_user", 125.5, "evt_firstpay");
+
+    expect(result.wallet.userId).toBe("brand_new_user");
+    expect(await db.walletBalance("brand_new_user")).toBe("125.50");
+    expect(await prisma.walletTransaction.count({ where: { eventId: "evt_firstpay" } })).toBe(1);
+    expect(await db.ledgerViolations()).toEqual([]);
+  });
+
+  it("50 concurrent first payments to the same new user create one wallet and 50 credits", async () => {
+    const results = await db.concurrently(50, (i) => creditWallet("fresh_user", 2, `evt_fresh_${i}`));
+
+    expect(results.filter((r) => r.status === "rejected")).toEqual([]);
+    expect(await prisma.wallet.count({ where: { userId: "fresh_user" } })).toBe(1);
+    expect(await prisma.walletTransaction.count()).toBe(50);
+    expect(await db.walletBalance("fresh_user")).toBe("100.00");
+    expect(await db.ledgerViolations()).toEqual([]);
   });
 });
