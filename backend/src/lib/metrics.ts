@@ -102,6 +102,12 @@ export const paymentVerifications = new client.Counter({
   registers: [registry],
 });
 
+export const webhookUnowned = new client.Counter({
+  name: "eventguard_webhook_unowned_total",
+  help: "payment.captured webhooks with no owner in the payment or order notes (permanent; acknowledged with 200)",
+  registers: [registry],
+});
+
 export const webhooksReceived = new client.Counter({
   name: "eventguard_webhooks_received_total",
   help: "Razorpay webhook deliveries by result",

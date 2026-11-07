@@ -191,8 +191,9 @@ A `payment.failed` webhook for a payment that is already `PAID` is ignored, so a
 | Kafka unreachable | Outbox rows stay `PENDING` with exponential backoff (up to 60 s); the stale-`RECEIVED` sweep still credits payments from the database |
 | Outbox publisher crashes mid-batch | Its lease expires; the rows are re-published; consumers absorb the duplicate |
 | Webhook stored, then the API crashed | Razorpay's redelivery is processed (only `PROCESSED`/`IGNORED` deliveries count as duplicates) |
-| Webhook processing fails (e.g. a DB error) | The handler marks the webhook FAILED and rethrows, so the route answers **500**; Razorpay resends and the idempotent delivery is processed exactly once |
-| Webhook arrives before verify with empty payment notes | The owner is resolved from the order (`order.notes.userId`); if none exists anywhere, no event is created and the webhook is FAILED (500) for a later retry |
+| Webhook processing fails temporarily (a DB or Razorpay API error) | The handler marks the webhook FAILED and rethrows, so the route answers **500**; Razorpay resends and the idempotent delivery is processed exactly once |
+| Webhook arrives before verify with empty payment notes | The owner is resolved from the order (`order.notes.userId`) |
+| Webhook for a payment with no owner anywhere (payment and order notes both lack `userId`) | Permanent: no event is created, the webhook is FAILED with reason `NO_OWNER`, `eventguard_webhook_unowned_total` is incremented, and the route answers **200** so Razorpay stops resending |
 | Payment for a user with no wallet | The wallet is created automatically inside the credit transaction (`INSERT … ON CONFLICT DO NOTHING`), so the payment is not dead-lettered |
 | Duplicate `POST /api/events` | HTTP `409 Event already exists` |
 
@@ -206,8 +207,8 @@ A later review of the Razorpay path surfaced four money bugs. Each fix ships wit
 
 | # | Problem | Fix | Test |
 |---|---|---|---|
-| 1 | A webhook arriving before `/verify` read `userId` from the payment notes (empty on live payloads), fabricated `user_<paymentId>`, and the credit dead-lettered — the money never reached the real user. | Resolve the owner from the order (`fetchOrderOwner`); if none, create no event and FAIL the webhook. `ensurePaymentSuccessEvent` requires a real userId. | `webhook-races`: empty payment notes credit the order's owner once; no owner anywhere creates no event and FAILs the webhook |
-| 2 | A webhook that failed during processing was marked FAILED but the route still answered 200, so Razorpay never resent and the payment was lost. | Both handlers rethrow after marking FAILED, so the route answers 500. | `webhook-races`: a processing error returns 500, then the resend returns 200 and credits once |
+| 1 | A webhook arriving before `/verify` read `userId` from the payment notes (empty on live payloads), fabricated `user_<paymentId>`, and the credit dead-lettered — the money never reached the real user. | Resolve the owner from the order (`fetchOrderOwner`); if none, create no event, FAIL the webhook as `NO_OWNER` and count it. `ensurePaymentSuccessEvent` requires a real userId. | `webhook-races`: empty payment notes credit the order's owner once; no owner anywhere creates no event, FAILs the webhook as `NO_OWNER` and increments the counter |
+| 2 | A webhook that failed during processing was marked FAILED but the route still answered 200, so Razorpay never resent and the payment was lost. | Temporary errors rethrow after marking FAILED, so the route answers 500; a permanent no-owner case answers 200 with `NO_OWNER` so Razorpay stops. | `webhook-races`: a processing error returns 500, then the resend returns 200 and credits once; an order-lookup failure returns 500; no owner returns 200 |
 | 3 | A payment for a user who never called `POST /api/wallets` dead-lettered on "Wallet not found". | `creditWalletInTx` creates the wallet on demand (`INSERT … ON CONFLICT DO NOTHING`). | `wallet-atomicity` and `recovery`: a walletless user is credited once; 50 concurrent first payments make one wallet |
 | 4 | `createOrUpdatePayment` checked-then-wrote outside the per-payment lock, so a `payment.failed` racing a capture could set PAID back to FAILED. | Run it under the same `pg_advisory_xact_lock`, conditional on `status <> 'PAID'`. | `webhook-races`: captured and failed raced 20× always settle PAID with one credit |
 
@@ -548,7 +549,7 @@ Every money test also checks two global invariants: every wallet's balance equal
 | **Logs** | One JSON object per line. HTTP lines carry `requestId` (echoed as `X-Request-ID`) and the route pattern; pipeline lines carry `eventId`, plus `partition`/`offset` or `trigger: "retry-worker"` |
 | **Ledger consistency** | Read-only reconciliation every 5 min, and on demand at `GET /api/admin/reconciliation` |
 
-Key metrics: event outcomes and processing latency (`eventguard_events_processed_total`, `eventguard_event_processing_duration_seconds`), end-to-end latency from API commit to credit commit (`eventguard_event_end_to_end_seconds`), duplicates by the guard that stopped them (`eventguard_duplicate_deliveries_total{reason}`), retries, dead-letters, Redis lock errors, outbox backlog and oldest pending age, consumer lag, open DLQ entries, wallet credits, webhook and verification results, HTTP latency by route, and reconciliation findings.
+Key metrics: event outcomes and processing latency (`eventguard_events_processed_total`, `eventguard_event_processing_duration_seconds`), end-to-end latency from API commit to credit commit (`eventguard_event_end_to_end_seconds`), duplicates by the guard that stopped them (`eventguard_duplicate_deliveries_total{reason}`), retries, dead-letters, Redis lock errors, outbox backlog and oldest pending age, consumer lag, open DLQ entries, wallet credits, webhook and verification results, ownerless webhooks (`eventguard_webhook_unowned_total`), poison Kafka messages (`eventguard_kafka_invalid_messages_total`), HTTP latency by route, and reconciliation findings.
 
 [docs/RUNBOOK.md](docs/RUNBOOK.md) maps each alert to the steps that diagnose it.
 

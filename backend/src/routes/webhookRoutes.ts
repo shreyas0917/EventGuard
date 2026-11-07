@@ -12,7 +12,7 @@ import {
 import { ensurePaymentSuccessEvent, fetchOrderOwner } from "../services/paymentService.js";
 import { logger } from "../lib/logger.js";
 import { authenticate, requireRole } from "../middleware/auth.js";
-import { webhooksReceived } from "../lib/metrics.js";
+import { webhooksReceived, webhookUnowned } from "../lib/metrics.js";
 import { validate } from "../middleware/validate.js";
 import { webhookIdParams, webhookListQuery } from "../validation/schemas.js";
 
@@ -111,8 +111,9 @@ router.post(
       logger.info(`[Razorpay] Signature verified for event: ${razorpayEventId}`);
 
       // Handle different event types
+      let outcome: "handled" | "unowned" = "handled";
       if (eventType === "payment.captured") {
-        await handlePaymentCaptured(webhook, payload);
+        outcome = await handlePaymentCaptured(webhook, payload);
       } else if (eventType === "payment.failed") {
         await handlePaymentFailed(webhook, payload);
       } else {
@@ -121,8 +122,16 @@ router.post(
         logger.info(`[Razorpay] Unsupported event type ignored: ${eventType}`);
       }
 
-      webhooksReceived.inc({ result: eventType === "payment.captured" || eventType === "payment.failed" ? "processed" : "ignored" });
-      // Return success - wallet processing continues asynchronously
+      webhooksReceived.inc({
+        result:
+          outcome === "unowned"
+            ? "unowned"
+            : eventType === "payment.captured" || eventType === "payment.failed"
+              ? "processed"
+              : "ignored",
+      });
+      // 200 also for a permanent NO_OWNER (retrying cannot help); only temporary errors answer 500.
+      // Wallet processing continues asynchronously
       res.status(200).json({
         success: true,
         message: "Webhook received",
@@ -138,12 +147,17 @@ router.post(
 );
 
 /**
- * Handle payment.captured webhook
+ * Handle payment.captured webhook.
+ *
+ * Errors are split in two. A TEMPORARY error (database or Razorpay API failure) marks the
+ * webhook FAILED and rethrows, so the route answers 500 and Razorpay resends. A PERMANENT
+ * one (no owner in the payment or order notes) cannot be fixed by a resend: it is marked
+ * FAILED with reason NO_OWNER, counted, and acknowledged with 200 so Razorpay stops.
  */
 async function handlePaymentCaptured(
   webhook: any,
   payload: any
-): Promise<void> {
+): Promise<"handled" | "unowned"> {
   const razorpayEventId = payload.event_id;
   const paymentData = payload.payload?.payment?.entity || payload.item || {};
 
@@ -158,7 +172,7 @@ async function handlePaymentCaptured(
       "FAILED",
       "Missing payment ID in webhook"
     );
-    return;
+    return "handled";
   }
 
   // The userId lives on the ORDER's notes (set in createPaymentOrder), not the payment's.
@@ -166,15 +180,30 @@ async function handlePaymentCaptured(
   // so we never credit a fabricated `user_<paymentId>`.
   let userId = extractUserIdFromPaymentNotes(paymentData.notes);
   if (!userId && razorpayOrderId) {
-    userId = await fetchOrderOwner(razorpayOrderId);
+    try {
+      userId = await fetchOrderOwner(razorpayOrderId);
+    } catch (error) {
+      // Razorpay API failure: temporary. FAILED + rethrow -> 500 -> Razorpay resends.
+      logger.error(`[Razorpay] Could not fetch order ${razorpayOrderId} to resolve the owner`, error);
+      await updateWebhookStatus(
+        razorpayEventId,
+        "FAILED",
+        error instanceof Error ? error.message : "Order lookup failed"
+      );
+      throw error;
+    }
   }
 
   if (!userId) {
-    // No owner anywhere: do NOT create the event. Mark FAILED and throw so the route
-    // answers non-2xx and Razorpay (or a later /verify) can retry with better data.
-    const reason = `Cannot resolve owner for payment ${razorpayPaymentId} (no userId in payment or order notes)`;
-    await updateWebhookStatus(razorpayEventId, "FAILED", reason);
-    throw new Error(reason);
+    // Permanent: neither the payment nor the order names an owner, so no resend can help.
+    // Create no event (never a fabricated owner), record why, count it, and answer 200.
+    // A later /verify by the real user can still create the event.
+    logger.error(
+      `[Razorpay] NO_OWNER: payment ${razorpayPaymentId} (order ${razorpayOrderId ?? "none"}) has no userId in payment or order notes`
+    );
+    await updateWebhookStatus(razorpayEventId, "FAILED", "NO_OWNER");
+    webhookUnowned.inc();
+    return "unowned";
   }
 
   try {
@@ -201,6 +230,7 @@ async function handlePaymentCaptured(
     );
 
     await updateWebhookStatus(razorpayEventId, "PROCESSED");
+    return "handled";
   } catch (error) {
     logger.error(
       `[Razorpay] Failed to process payment.captured: ${razorpayPaymentId}`,

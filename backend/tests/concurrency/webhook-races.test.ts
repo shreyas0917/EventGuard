@@ -19,8 +19,14 @@ vi.mock("../../src/lib/razorpay.js", () => ({
   isRazorpayConfigured: () => true,
   getRazorpayKeySecret: () => KEY_SECRET,
   getRazorpay: () => ({
-    // An order whose id contains NOOWNER has no userId in its notes; every other order belongs to user_wh.
-    orders: { fetch: async (id: string) => ({ id, notes: id.includes("NOOWNER") ? {} : { userId: "user_wh" } }) },
+    // An order whose id contains NOOWNER has no userId in its notes; one containing APIDOWN makes the
+    // Razorpay API fail; every other order belongs to user_wh.
+    orders: {
+      fetch: async (id: string) => {
+        if (id.includes("APIDOWN")) throw new Error("Razorpay API unavailable");
+        return { id, notes: id.includes("NOOWNER") ? {} : { userId: "user_wh" } };
+      },
+    },
     payments: { fetch: async (id: string) => ({ id, status: "captured", amount: 50000, currency: "INR" }) },
   }),
 }));
@@ -30,6 +36,7 @@ const { prisma } = await import("../../src/lib/prisma.js");
 const { createApp } = await import("../../src/app.js");
 const { processEvent } = await import("../../src/kafka/eventWorker.js");
 const paymentService = await import("../../src/services/paymentService.js");
+const { webhookUnowned } = await import("../../src/lib/metrics.js");
 const db = await import("../helpers/db.js");
 
 const app = createApp();
@@ -84,6 +91,8 @@ function verifyCheckout(orderId: string, paymentId: string) {
     .set(bearer(tokenFor("user_wh", "user")))
     .send({ orderId, paymentId, signature });
 }
+
+const unownedCount = async () => (await webhookUnowned.get()).values[0]?.value ?? 0;
 
 const statusesOf = (results: PromiseSettledResult<request.Response>[]) =>
   results.map((r) => (r.status === "fulfilled" ? r.value.status : -1));
@@ -165,18 +174,37 @@ describe("webhook before verify with empty payment notes", () => {
     expect(await prisma.deadLetterEvent.count()).toBe(0);
   });
 
-  it("creates no event and marks the webhook FAILED when the order has no owner either", async () => {
+  it("no owner anywhere is permanent: 200, FAILED with NO_OWNER, counted, and no event created", async () => {
+    const before = await unownedCount();
     const body = webhookBody("payment.captured", "pay_NOOWNER0001", "order_NOOWNER01", []);
 
     const res = await sendWebhook(body, "evt_rzp_noowner_1");
-    // Non-2xx so Razorpay retries / a later verify can supply the owner
-    expect(res.status).toBe(500);
+    // 200 so Razorpay stops resending: a resend cannot conjure an owner
+    expect(res.status).toBe(200);
+
+    const webhook = await prisma.webhookEvent.findFirstOrThrow();
+    expect(webhook.status).toBe("FAILED");
+    expect(webhook.errorMessage).toBe("NO_OWNER");
+    expect(await unownedCount()).toBe(before + 1);
 
     expect(await prisma.event.count()).toBe(0);
     expect(await prisma.outboxEvent.count()).toBe(0);
     expect(await prisma.payment.count()).toBe(0);
     expect(await prisma.deadLetterEvent.count()).toBe(0);
-    expect((await prisma.webhookEvent.findFirstOrThrow()).status).toBe("FAILED");
+  });
+
+  it("a Razorpay API failure while resolving the owner is temporary: 500, FAILED, not counted as unowned", async () => {
+    const before = await unownedCount();
+    const body = webhookBody("payment.captured", "pay_APIDOWN0001", "order_APIDOWN001", []);
+
+    const res = await sendWebhook(body, "evt_rzp_apidown_1");
+    expect(res.status).toBe(500);
+
+    const webhook = await prisma.webhookEvent.findFirstOrThrow();
+    expect(webhook.status).toBe("FAILED");
+    expect(webhook.errorMessage).toMatch(/Razorpay API unavailable/);
+    expect(await unownedCount()).toBe(before);
+    expect(await prisma.event.count()).toBe(0);
   });
 });
 
