@@ -12,3 +12,4 @@ Short records of the decisions behind EventGuard's reliability mechanisms: the c
 | [0006](0006-money-as-fixed-precision-decimal.md) | Keep money as DECIMAL(15,2), guarded by CHECK constraints |
 | [0007](0007-jwt-roles-and-demo-login.md) | JWT bearer tokens with two roles; demo login stands in for an identity provider |
 | [0008](0008-reconciliation-reports-never-corrects.md) | Reconciliation reports discrepancies and never corrects money |
+| [0009](0009-webhook-owner-resolution-and-retry.md) | Resolve the payment owner from the order, retry failed webhooks, auto-create wallets |

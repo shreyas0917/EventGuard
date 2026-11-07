@@ -36,6 +36,7 @@ Deliver the same payment event once or fifty times, and the wallet is still cred
 - [Event lifecycle](#event-lifecycle)
 - [Payment flow: verify vs. webhook race](#payment-flow-verify-vs-webhook-race)
 - [Failure handling](#failure-handling)
+- [Bugs found and fixed](#bugs-found-and-fixed)
 - [Security model](#security-model)
 - [Tech stack](#tech-stack)
 - [Getting started](#getting-started)
@@ -190,11 +191,27 @@ A `payment.failed` webhook for a payment that is already `PAID` is ignored, so a
 | Kafka unreachable | Outbox rows stay `PENDING` with exponential backoff (up to 60 s); the stale-`RECEIVED` sweep still credits payments from the database |
 | Outbox publisher crashes mid-batch | Its lease expires; the rows are re-published; consumers absorb the duplicate |
 | Webhook stored, then the API crashed | Razorpay's redelivery is processed (only `PROCESSED`/`IGNORED` deliveries count as duplicates) |
+| Webhook processing fails (e.g. a DB error) | The handler marks the webhook FAILED and rethrows, so the route answers **500**; Razorpay resends and the idempotent delivery is processed exactly once |
+| Webhook arrives before verify with empty payment notes | The owner is resolved from the order (`order.notes.userId`); if none exists anywhere, no event is created and the webhook is FAILED (500) for a later retry |
+| Payment for a user with no wallet | The wallet is created automatically inside the credit transaction (`INSERT … ON CONFLICT DO NOTHING`), so the payment is not dead-lettered |
 | Duplicate `POST /api/events` | HTTP `409 Event already exists` |
 
-Each row is covered by an automated test against real infrastructure; see [docs/TESTING.md](docs/TESTING.md).
+Each row is covered by an automated test against real infrastructure; see [docs/TESTING.md](docs/TESTING.md). The last three were [bugs found and fixed](#bugs-found-and-fixed).
 
 To exercise the retry path on purpose, set `FAIL_PROCESSING_FOR_EVENT_ID=<eventId>` on the backend. That event will fail every attempt and land in the DLQ.
+
+## Bugs found and fixed
+
+A later review of the Razorpay path surfaced four money bugs. Each fix ships with a test that proves it ([ADR 0009](docs/adr/0009-webhook-owner-resolution-and-retry.md)).
+
+| # | Problem | Fix | Test |
+|---|---|---|---|
+| 1 | A webhook arriving before `/verify` read `userId` from the payment notes (empty on live payloads), fabricated `user_<paymentId>`, and the credit dead-lettered — the money never reached the real user. | Resolve the owner from the order (`fetchOrderOwner`); if none, create no event and FAIL the webhook. `ensurePaymentSuccessEvent` requires a real userId. | `webhook-races`: empty payment notes credit the order's owner once; no owner anywhere creates no event and FAILs the webhook |
+| 2 | A webhook that failed during processing was marked FAILED but the route still answered 200, so Razorpay never resent and the payment was lost. | Both handlers rethrow after marking FAILED, so the route answers 500. | `webhook-races`: a processing error returns 500, then the resend returns 200 and credits once |
+| 3 | A payment for a user who never called `POST /api/wallets` dead-lettered on "Wallet not found". | `creditWalletInTx` creates the wallet on demand (`INSERT … ON CONFLICT DO NOTHING`). | `wallet-atomicity` and `recovery`: a walletless user is credited once; 50 concurrent first payments make one wallet |
+| 4 | `createOrUpdatePayment` checked-then-wrote outside the per-payment lock, so a `payment.failed` racing a capture could set PAID back to FAILED. | Run it under the same `pg_advisory_xact_lock`, conditional on `status <> 'PAID'`. | `webhook-races`: captured and failed raced 20× always settle PAID with one credit |
+
+Smaller fixes from the same review: `createWallet` is race-safe (catches P2002), webhook signatures are verified over the raw body only (no timestamp branch), and poison Kafka messages are dropped and counted rather than silently committed.
 
 ## Security model
 
@@ -496,8 +513,8 @@ Three automated suites back the guarantees. All of them run in CI ([`.github/wor
 
 | Suite | Tests | Runs against | Command (in `backend/`) |
 |---|---|---|---|
-| Security | 130 | in-process (Prisma and Razorpay replaced by in-memory doubles) | `npm run test:security` |
-| Concurrency | 20 | disposable PostgreSQL, Redis and Kafka | `npm run test:integration` |
+| Security | 143 | in-process (Prisma and Razorpay replaced by in-memory doubles) | `npm run test:security` |
+| Concurrency | 27 | disposable PostgreSQL, Redis and Kafka | `npm run test:integration` |
 | Failure injection | 19 | the same disposable stack, with containers paused, stopped and processes killed | `npm run test:integration` |
 
 ```bash
@@ -515,6 +532,7 @@ What they demonstrate (details in [docs/TESTING.md](docs/TESTING.md)):
 - **Consumer process killed** (exit 137) right after the credit commits, or right after claiming → exactly one credit after restart and recovery.
 - **Redis stopped or hung, PostgreSQL hung, Kafka stopped** → no money moves during the outage, exactly one credit after it.
 - **Retry exhaustion** → FAILED and dead-lettered atomically; a replay after the fix credits once.
+- **A webhook before verify with empty payment notes** → owner resolved from the order, credited once; **a webhook processing failure** → 500 then one credit on resend; **`payment.failed` racing a capture** → always PAID; **a walletless user's payment** → wallet auto-created, credited once (the [bugs found and fixed](#bugs-found-and-fixed)).
 - A stale worker writes nothing; concurrent outbox publishers claim disjoint rows; CHECK constraints reject impossible ledger rows; reconciliation flags writes that bypassed the application.
 
 Every money test also checks two global invariants: every wallet's balance equals its ledger sum, and no completed payment has other than exactly one ledger row.

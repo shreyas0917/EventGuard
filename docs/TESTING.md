@@ -6,7 +6,7 @@ EventGuard's claims (one credit per payment, recovery from crashes and outages) 
 
 | Suite | Command (in `backend/`) | Needs | What it proves |
 |---|---|---|---|
-| Security | `npm run test:security` | nothing (Prisma and Razorpay replaced by in-memory doubles) | Every route's access rule, token attacks, ownership, input validation, production config guards |
+| Security | `npm run test:security` | nothing (Prisma and Razorpay replaced by in-memory doubles) | Every route's access rule, token attacks, ownership, input validation, production config guards, webhook signature verification, Kafka poison-message handling |
 | Concurrency | `npm run test:integration` | the disposable test stack | Duplicate and concurrent deliveries never credit twice; claims are atomic and fenced |
 | Failure injection | `npm run test:integration` | the disposable test stack | Recovery from consumer crashes, Redis/PostgreSQL/Kafka outages, outbox publisher crashes, retry exhaustion, rollbacks |
 | End-to-end smoke | `bash scripts/smoke-auth.sh` (repo root) | the full dev stack (`docker compose up`) | Auth, ownership and one-credit pipeline against the real running system |
@@ -33,9 +33,9 @@ Two guards keep it that way:
 | `duplicate-delivery` | 100 simultaneous deliveries of one payment through the full pipeline | 1 ledger row, balance = amount, `attemptCount` = 1, 99 DUPLICATE log entries |
 | `duplicate-delivery` | 100 events × 3 simultaneous deliveries, one wallet | 100 credits, balance = sum, no lost updates |
 | `database-guards-only` | Same, with the Redis lock and cache **switched off** | Exactly one claim (`attemptCount` = 1) and one credit from PostgreSQL alone |
-| `wallet-atomicity` | 200 concurrent credits of different amounts; 50 credits with one eventId; a credit to a missing wallet | Balance equals the exact sum; UNIQUE rejects 49; failed credit leaves nothing behind |
-| `payment-and-ingress` | 100 concurrent verify/webhook calls for one payment; 100 concurrent `POST /api/events` with one id; 8 concurrent DLQ replays | 1 payment, 1 event, 1 outbox row; one 201 and 99 409s; one replay runs, 7 get 409 |
-| `webhook-races` | 100 identical signed webhook deliveries over HTTP; verify and webhooks racing; out-of-order captured/failed | All acknowledged with 200; 1 payment, 1 event, 1 credit; a late `payment.failed` never undoes a payment |
+| `wallet-atomicity` | 200 concurrent credits of different amounts; 50 credits with one eventId; a negative-amount credit; a credit to a walletless user; 50 concurrent first payments to a new user | Balance equals the exact sum; UNIQUE rejects 49; a negative amount rolls back the auto-created wallet; a walletless user is credited once; 50 first payments make one wallet |
+| `payment-and-ingress` | 100 concurrent verify/webhook calls for one payment; 100 concurrent `POST /api/events` with one id; 20 concurrent `POST /api/wallets`; 8 concurrent DLQ replays | 1 payment, 1 event, 1 outbox row; one 201 and 99 409s; no 500 and one wallet; one replay runs, 7 get 409 |
+| `webhook-races` | 100 identical signed deliveries; verify and webhooks racing; a webhook before verify with empty payment notes; no owner anywhere; a processing failure then resend; `payment.failed` racing a capture 20×; out-of-order captured/failed | All acknowledged; 1 payment/event/credit; owner resolved from the order; no owner → 500 and no event; failure → 500 then 200 once; the race always settles PAID; a late `payment.failed` never undoes a payment |
 | `kafka-competing-consumers` | 100 copies of one message consumed by two independent consumer groups (200 deliveries) | 1 credit, `attemptCount` = 1 |
 | `claim-fencing` | Lease expiry, takeover, stale worker writes, backoff gating, exhaustion | A stale worker writes nothing; FAILED and its DLQ row commit together |
 
@@ -53,7 +53,7 @@ Every test that moves money also checks two global invariants: no wallet whose b
 | `infrastructure-outages` | PostgreSQL **paused** | Query fails after `socket_timeout`; no money moves; redelivery or sweep completes it |
 | `infrastructure-outages` | Kafka **stopped** | Outbox keeps the row PENDING with backoff; publishes after restart; consumed and credited once |
 | `recovery` | Processing fails 3 times | Event FAILED and dead-lettered atomically; FAILED is terminal; a replay after the fix credits once; a failed replay returns to the DLQ |
-| `recovery` | Credit fails inside the completion transaction | Full rollback: no ledger row, no COMPLETED; the retry pays once |
+| `recovery` | A payment for a user who never created a wallet | The wallet is auto-created inside the credit transaction; the event completes once and is not dead-lettered (rollback-on-failure is covered by `wallet-atomicity`) |
 | `recovery` | A redelivery meets a lock left by a crashed worker | Contention commits the offset; the stale-RECEIVED sweep runs the event |
 | `recovery` | Outbox publisher dies after publishing, before marking | Row reclaimed after the lease, re-published, duplicate absorbed; concurrent publishers claim disjoint rows |
 | `recovery` | Webhook stored just before an API crash | Razorpay's redelivery is processed, not dismissed as a duplicate |
