@@ -19,7 +19,8 @@ vi.mock("../../src/lib/razorpay.js", () => ({
   isRazorpayConfigured: () => true,
   getRazorpayKeySecret: () => KEY_SECRET,
   getRazorpay: () => ({
-    orders: { fetch: async (id: string) => ({ id, notes: { userId: "user_wh" } }) },
+    // An order whose id contains NOOWNER has no userId in its notes; every other order belongs to user_wh.
+    orders: { fetch: async (id: string) => ({ id, notes: id.includes("NOOWNER") ? {} : { userId: "user_wh" } }) },
     payments: { fetch: async (id: string) => ({ id, status: "captured", amount: 50000, currency: "INR" }) },
   }),
 }));
@@ -32,8 +33,17 @@ const db = await import("../helpers/db.js");
 
 const app = createApp();
 
-/** A payment webhook shaped like live Razorpay: no event_id in the body. */
-function webhookBody(event: "payment.captured" | "payment.failed", paymentId: string, orderId: string) {
+/**
+ * A payment webhook shaped like live Razorpay: no event_id in the body. `paymentNotes`
+ * defaults to the owner on the payment entity; pass [] to model a live payload where the
+ * owner is only on the order (resolved via orders.fetch).
+ */
+function webhookBody(
+  event: "payment.captured" | "payment.failed",
+  paymentId: string,
+  orderId: string,
+  paymentNotes: unknown = { userId: "user_wh" }
+) {
   return JSON.stringify({
     entity: "event",
     account_id: "acc_vitest",
@@ -48,7 +58,7 @@ function webhookBody(event: "payment.captured" | "payment.failed", paymentId: st
           currency: "INR",
           status: event === "payment.captured" ? "captured" : "failed",
           order_id: orderId,
-          notes: { userId: "user_wh" },
+          notes: paymentNotes,
         },
       },
     },
@@ -135,6 +145,37 @@ describe("duplicate webhook deliveries over HTTP", () => {
     expect(await prisma.webhookEvent.count({ where: { status: "PROCESSED" } })).toBe(50);
 
     await deliverEventAndExpectOneCredit(`evt_${paymentId}`);
+  });
+});
+
+describe("webhook before verify with empty payment notes", () => {
+  it("resolves the owner from the order and credits that user once, nothing dead-lettered", async () => {
+    // Live shape: payment.captured notes are [], the owner is only on the order.
+    const body = webhookBody("payment.captured", "pay_EMPTY00001", "order_EMPTY0001", []);
+
+    const res = await sendWebhook(body, "evt_rzp_empty_1");
+    expect(res.status).toBe(200);
+
+    expect((await prisma.payment.findFirstOrThrow()).userId).toBe("user_wh");
+    const event = await prisma.event.findUniqueOrThrow({ where: { eventId: "evt_pay_EMPTY00001" } });
+    expect((event.payload as any).userId).toBe("user_wh");
+
+    await deliverEventAndExpectOneCredit("evt_pay_EMPTY00001");
+    expect(await prisma.deadLetterEvent.count()).toBe(0);
+  });
+
+  it("creates no event and marks the webhook FAILED when the order has no owner either", async () => {
+    const body = webhookBody("payment.captured", "pay_NOOWNER0001", "order_NOOWNER01", []);
+
+    const res = await sendWebhook(body, "evt_rzp_noowner_1");
+    // Non-2xx so Razorpay retries / a later verify can supply the owner
+    expect(res.status).toBe(500);
+
+    expect(await prisma.event.count()).toBe(0);
+    expect(await prisma.outboxEvent.count()).toBe(0);
+    expect(await prisma.payment.count()).toBe(0);
+    expect(await prisma.deadLetterEvent.count()).toBe(0);
+    expect((await prisma.webhookEvent.findFirstOrThrow()).status).toBe("FAILED");
   });
 });
 

@@ -9,7 +9,7 @@ import {
   isWebhookProcessingEnabled,
   extractUserIdFromPaymentNotes,
 } from "../services/webhookService.js";
-import { ensurePaymentSuccessEvent } from "../services/paymentService.js";
+import { ensurePaymentSuccessEvent, fetchOrderOwner } from "../services/paymentService.js";
 import { logger } from "../lib/logger.js";
 import { authenticate, requireRole } from "../middleware/auth.js";
 import { webhooksReceived } from "../lib/metrics.js";
@@ -153,7 +153,6 @@ async function handlePaymentCaptured(
   const razorpayOrderId = paymentData.order_id || null;
   const amount = paymentData.amount; // In paise
   const currency = paymentData.currency || "INR";
-  const userId = extractUserIdFromPaymentNotes(paymentData.notes);
 
   if (!razorpayPaymentId) {
     await updateWebhookStatus(
@@ -162,6 +161,22 @@ async function handlePaymentCaptured(
       "Missing payment ID in webhook"
     );
     return;
+  }
+
+  // The userId lives on the ORDER's notes (set in createPaymentOrder), not the payment's.
+  // Live payment.captured payloads usually have notes: []. Resolve the owner from the order
+  // so we never credit a fabricated `user_<paymentId>`.
+  let userId = extractUserIdFromPaymentNotes(paymentData.notes);
+  if (!userId && razorpayOrderId) {
+    userId = await fetchOrderOwner(razorpayOrderId);
+  }
+
+  if (!userId) {
+    // No owner anywhere: do NOT create the event. Mark FAILED and throw so the route
+    // answers non-2xx and Razorpay (or a later /verify) can retry with better data.
+    const reason = `Cannot resolve owner for payment ${razorpayPaymentId} (no userId in payment or order notes)`;
+    await updateWebhookStatus(razorpayEventId, "FAILED", reason);
+    throw new Error(reason);
   }
 
   try {

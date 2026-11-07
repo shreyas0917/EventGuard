@@ -144,6 +144,9 @@ const PaymentDemo: React.FC<PaymentDemoProps> = ({ currentUserId }) => {
         order_id: order.orderId,
         amount: order.amount,
         currency: order.currency,
+        // Second safeguard: the owner is already on the order notes, but pass it on the
+        // payment too so a webhook arriving before verify can resolve the user directly.
+        notes: { userId: currentUserId },
         prefill: { name: "Test User", email: "test@example.com" },
         theme: { color: "#7c3aed" },
         config: {

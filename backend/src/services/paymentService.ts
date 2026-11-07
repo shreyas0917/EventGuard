@@ -57,9 +57,18 @@ export async function ensurePaymentSuccessEvent(
     source,
   } = input;
 
+  if (!userId) {
+    // The canonical event must carry a real owner; a fabricated `user_<paymentId>` would
+    // never have a wallet and would dead-letter. Callers resolve the owner first
+    // (verify from the token, webhook from the order notes).
+    throw new Error(
+      `ensurePaymentSuccessEvent requires a non-null userId for payment ${razorpayPaymentId}`
+    );
+  }
+
   const eventId = canonicalPaymentEventId(razorpayPaymentId);
   const eventPayload = {
-    userId: userId || `user_${razorpayPaymentId}`,
+    userId,
     paymentId: razorpayPaymentId,
     orderId: razorpayOrderId,
     amount,
