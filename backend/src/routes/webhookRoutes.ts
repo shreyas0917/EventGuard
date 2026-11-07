@@ -60,7 +60,6 @@ router.post(
 
       // Get signature from header
       const signature = req.headers["x-razorpay-signature"] as string;
-      const timestamp = req.headers["x-razorpay-timestamp"] as string | undefined;
       // Live Razorpay delivery id (preferred over body.event_id, which is often absent)
       const deliveryEventIdHeader = req.headers["x-razorpay-event-id"];
       const deliveryEventId = Array.isArray(deliveryEventIdHeader)
@@ -80,7 +79,6 @@ router.post(
       const result = await verifyAndStoreWebhook(
         rawBody,
         signature,
-        timestamp,
         deliveryEventId
       );
 

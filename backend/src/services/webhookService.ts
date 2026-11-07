@@ -233,7 +233,6 @@ export async function updateWebhookStatus(
 export async function verifyAndStoreWebhook(
   rawBody: string,
   signature: string,
-  timestamp?: string,
   deliveryEventId?: string | null
 ): Promise<
   | { verified: true; webhook: any; payload: RazorpayWebhookPayload }
@@ -241,7 +240,7 @@ export async function verifyAndStoreWebhook(
 > {
   try {
     // First verify signature
-    const isValid = verifyRazorpaySignature(rawBody, signature, timestamp);
+    const isValid = verifyRazorpaySignature(rawBody, signature);
 
     if (!isValid) {
       logger.warn("[Razorpay] Invalid webhook signature");

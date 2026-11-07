@@ -3,22 +3,16 @@ import { config } from "../config/index.js";
 import { logger } from "../lib/logger.js";
 
 /**
- * Verify Razorpay webhook signature
+ * Verify a Razorpay webhook signature.
  *
- * Razorpay uses HMAC-SHA256 signature verification.
- * The signature is computed from: webhook_id + "." + timestamp + "." + payload
- * Or simply: timestamp + "." + payload (depending on Razorpay version)
+ * Razorpay signs the raw request body with HMAC-SHA256 and sends the hex digest in
+ * X-Razorpay-Signature. There is no timestamp in the signed data.
  *
  * @param payload - Raw request body (string)
- * @param signature - X-Razorpay-Signature header value
- * @param timestamp - X-Razorpay-Timestamp header value (optional, for newer webhooks)
- * @returns true if signature is valid, false otherwise
+ * @param signature - X-Razorpay-Signature header value (hex)
+ * @returns true if the signature is valid, false otherwise
  */
-export function verifyRazorpaySignature(
-  payload: string,
-  signature: string,
-  timestamp?: string
-): boolean {
+export function verifyRazorpaySignature(payload: string, signature: string): boolean {
   try {
     const webhookSecret = config.razorpay_webhook_secret;
 
@@ -32,29 +26,15 @@ export function verifyRazorpaySignature(
       return false;
     }
 
-    // For Razorpay webhooks, the signature is computed as:
-    // HMAC-SHA256 of payload using webhook_secret
-    // Some versions include timestamp: hmac_sha256(timestamp + "." + payload, secret)
-    let dataToVerify: string;
-
-    if (timestamp) {
-      // Newer Razorpay format: timestamp.payload
-      dataToVerify = `${timestamp}.${payload}`;
-    } else {
-      // Legacy format: just the payload
-      dataToVerify = payload;
-    }
-
-    const expectedSignature = crypto
+    const expected = crypto
       .createHmac("sha256", webhookSecret)
-      .update(dataToVerify, "utf8")
-      .digest("hex");
+      .update(payload, "utf8")
+      .digest();
+    const received = Buffer.from(signature, "hex");
 
-    // Use timing-safe comparison to prevent timing attacks
-    const isValid = crypto.timingSafeEqual(
-      Buffer.from(signature),
-      Buffer.from(expectedSignature)
-    );
+    // Check lengths first: timingSafeEqual throws on a length mismatch, and a non-hex
+    // signature decodes to a shorter buffer.
+    const isValid = received.length === expected.length && crypto.timingSafeEqual(received, expected);
 
     if (!isValid) {
       logger.warn("[Razorpay] Invalid webhook signature");
@@ -62,7 +42,6 @@ export function verifyRazorpaySignature(
 
     return isValid;
   } catch (error) {
-    // If buffer lengths don't match, timingSafeEqual throws
     logger.warn("[Razorpay] Signature verification error");
     return false;
   }
