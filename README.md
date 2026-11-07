@@ -515,7 +515,7 @@ Three automated suites back the guarantees. All of them run in CI ([`.github/wor
 | Suite | Tests | Runs against | Command (in `backend/`) |
 |---|---|---|---|
 | Security | 143 | in-process (Prisma and Razorpay replaced by in-memory doubles) | `npm run test:security` |
-| Concurrency | 27 | disposable PostgreSQL, Redis and Kafka | `npm run test:integration` |
+| Concurrency | 28 | disposable PostgreSQL, Redis and Kafka | `npm run test:integration` |
 | Failure injection | 19 | the same disposable stack, with containers paused, stopped and processes killed | `npm run test:integration` |
 
 ```bash
