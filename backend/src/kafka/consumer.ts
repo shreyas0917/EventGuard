@@ -3,6 +3,7 @@ import { getKafka } from "../lib/kafka.js";
 import { logger, withLogContext } from "../lib/logger.js";
 import { config } from "../config/index.js";
 import { processEvent } from "./eventWorker.js";
+import { kafkaInvalidMessages } from "../lib/metrics.js";
 
 let consumer: Consumer | null = null;
 
@@ -114,23 +115,32 @@ export async function startConsumer(): Promise<void> {
 export async function handleMessage(payload: { partition: number; message: KafkaMessage }): Promise<void> {
   const { partition, message } = payload;
 
+  // A poison message can never be processed, so we drop it (letting its offset commit) and
+  // count it. Rethrowing would make KafkaJS redeliver it forever and block the partition.
   if (!message.value || !message.key) {
-    logger.warn("[Kafka] Received message without value or key");
+    logger.error("[Kafka] Poison message dropped: missing key or value", { partition });
+    kafkaInvalidMessages.inc({ reason: "missing_key_or_value" });
     return;
   }
 
   const eventId = message.key.toString();
 
+  let messageBody: any;
   try {
-    const messageBody = JSON.parse(message.value.toString());
+    messageBody = JSON.parse(message.value.toString());
+  } catch (error) {
+    logger.error(`[Kafka] Poison message dropped: invalid JSON for ${eventId}`, error);
+    kafkaInvalidMessages.inc({ reason: "invalid_json" });
+    return;
+  }
 
-    // Validate required fields
-    if (!messageBody.eventId || !messageBody.eventType) {
-      logger.error("[Kafka] Invalid message format - missing eventId or eventType", messageBody);
-      // Skip invalid messages without committing - they'll be retried
-      return;
-    }
+  if (!messageBody.eventId || !messageBody.eventType) {
+    logger.error("[Kafka] Poison message dropped: missing eventId or eventType", { eventId, partition });
+    kafkaInvalidMessages.inc({ reason: "missing_fields" });
+    return;
+  }
 
+  try {
     logger.info(`[Kafka] Received event: ${eventId} from partition ${partition}`);
 
     // Process the event
@@ -141,8 +151,9 @@ export async function handleMessage(payload: { partition: number; message: Kafka
     // The offset is resolved by runEventConsumer only after this resolves; a throw keeps
     // this message (and the rest of its chunk) eligible for redelivery: at-least-once.
   } catch (error) {
+    // A transient/infrastructure failure (Redis, PostgreSQL): rethrow so the offset is NOT
+    // committed and the message is redelivered. Poison messages were already handled above.
     logger.error(`[Kafka] Failed to process message for event: ${eventId}`, error);
-    // Re-throw to prevent offset commit
     throw error;
   }
 }

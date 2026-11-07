@@ -72,6 +72,13 @@ export const redisLockErrors = new client.Counter({
   registers: [registry],
 });
 
+export const kafkaInvalidMessages = new client.Counter({
+  name: "eventguard_kafka_invalid_messages_total",
+  help: "Poison Kafka messages dropped (offset committed), by reason",
+  labelNames: ["reason"] as const,
+  registers: [registry],
+});
+
 // ---------- Money ----------
 
 export const walletCredits = new client.Counter({
