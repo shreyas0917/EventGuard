@@ -241,7 +241,9 @@ async function handlePaymentFailed(webhook: any, payload: any): Promise<void> {
   }
 
   try {
-    // Never downgrade an already-PAID payment
+    // Fast path only: skip the write when the payment is already clearly PAID. The real
+    // guard against a PAID→FAILED downgrade is the advisory lock inside createOrUpdatePayment,
+    // which also covers a verify/capture that commits PAID after this check.
     if (await isPaymentProcessed(razorpayPaymentId)) {
       logger.info(
         `[Razorpay] Ignoring payment.failed for already-PAID payment ${razorpayPaymentId}`

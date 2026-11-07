@@ -205,6 +205,28 @@ describe("webhook processing failure is retried", () => {
   });
 });
 
+describe("payment.failed racing payment.captured for the same payment", () => {
+  it("always settles PAID with exactly one credit, over 20 concurrent races", async () => {
+    for (let n = 0; n < 20; n++) {
+      const paymentId = `pay_RACE4_${n}`;
+      const orderId = `order_RACE4_${n}`;
+      const captured = webhookBody("payment.captured", paymentId, orderId);
+      const failed = webhookBody("payment.failed", paymentId, orderId);
+
+      await db.concurrently(2, (i) =>
+        i === 0 ? sendWebhook(captured, `evt_cap_${n}`) : sendWebhook(failed, `evt_fail_${n}`)
+      );
+
+      // A failure webhook must never win the race and leave the payment FAILED
+      expect((await prisma.payment.findUniqueOrThrow({ where: { razorpayPaymentId: paymentId } })).status).toBe("PAID");
+    }
+
+    // One canonical event per captured payment; deliver one end to end -> one credit
+    expect(await prisma.event.count()).toBe(20);
+    await deliverEventAndExpectOneCredit("evt_pay_RACE4_0");
+  });
+});
+
 describe("out-of-order webhooks", () => {
   it("payment.failed arriving after payment.captured does not undo the payment", async () => {
     await sendWebhook(webhookBody("payment.captured", "pay_ORDER00001", "order_ORDER0001"), "evt_rzp_ooo_1").expect(200);

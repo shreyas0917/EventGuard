@@ -1,4 +1,4 @@
-import { prisma } from "../lib/prisma.js";
+import { prisma, TX_OPTIONS } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 import { config } from "../config/index.js";
 import { verifyRazorpaySignature, isRazorpayConfigured } from "./razorpayService.js";
@@ -344,42 +344,49 @@ export async function createOrUpdatePayment(
   rawPayload: any
 ): Promise<any> {
   try {
-    const existing = await prisma.payment.findUnique({
-      where: { razorpayPaymentId },
-    });
+    // Take the same per-payment advisory lock ensurePaymentSuccessEvent uses, so a
+    // payment.failed cannot read a stale status and overwrite a PAID set by a concurrent
+    // verify/capture. The read and the write are atomic within the lock.
+    return await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`pay:${razorpayPaymentId}`}))`;
 
-    // Never downgrade PAID → FAILED
-    if (existing?.status === "PAID" && status === "FAILED") {
-      logger.info(
-        `[Webhook] Skipping FAILED update for already-PAID payment ${razorpayPaymentId}`
-      );
-      return existing;
-    }
+      const existing = await tx.payment.findUnique({
+        where: { razorpayPaymentId },
+      });
 
-    const payment = await prisma.payment.upsert({
-      where: { razorpayPaymentId },
-      update: {
-        status,
-        amount,
-        currency,
-        errorMessage: null,
-        metadata: rawPayload,
-        updatedAt: new Date(),
-      },
-      create: {
-        razorpayPaymentId,
-        razorpayOrderId,
-        orderNumber,
-        userId,
-        amount,
-        currency,
-        status,
-        metadata: rawPayload,
-      },
-    });
+      // Never downgrade PAID → FAILED (conditional on status <> 'PAID')
+      if (existing?.status === "PAID" && status === "FAILED") {
+        logger.info(
+          `[Webhook] Skipping FAILED update for already-PAID payment ${razorpayPaymentId}`
+        );
+        return existing;
+      }
 
-    logger.info(`[Webhook] Payment ${status}: ${razorpayPaymentId}`);
-    return payment;
+      const payment = await tx.payment.upsert({
+        where: { razorpayPaymentId },
+        update: {
+          status,
+          amount,
+          currency,
+          errorMessage: null,
+          metadata: rawPayload,
+          updatedAt: new Date(),
+        },
+        create: {
+          razorpayPaymentId,
+          razorpayOrderId,
+          orderNumber,
+          userId,
+          amount,
+          currency,
+          status,
+          metadata: rawPayload,
+        },
+      });
+
+      logger.info(`[Webhook] Payment ${status}: ${razorpayPaymentId}`);
+      return payment;
+    }, TX_OPTIONS);
   } catch (error) {
     logger.error("[Webhook] Error creating/updating payment", error);
     throw error;
