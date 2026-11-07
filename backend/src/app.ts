@@ -20,16 +20,16 @@ import { metricsHandler } from "./routes/metrics.js";
 export function createApp() {
   const app = express();
 
-  // Phase 10: Security headers
+  // Security headers
   app.use(securityHeaders());
 
-  // Phase 10: CORS
+  // CORS
   app.use(corsMiddleware());
 
-  // Phase 10: Correlation ID for request tracking
+  // Correlation ID for request tracking
   app.use(correlationId);
 
-  // Phase 10: Request logging
+  // Request logging
   app.use(requestLogger);
 
   // Body parser — capture original raw bytes for Razorpay webhook HMAC verification
@@ -43,7 +43,7 @@ export function createApp() {
     })
   );
 
-  // Phase 10: General rate limiting for API
+  // General rate limiting for API
   app.use("/api", rateLimit());
 
   // Health endpoints (no rate limit, no auth)
@@ -82,7 +82,7 @@ export function createApp() {
     });
   });
 
-  // Phase 10: Global error handler (must be last)
+  // Global error handler (must be last)
   app.use(errorHandler);
 
   return app;

@@ -521,22 +521,6 @@ Every money test also checks two global invariants: every wallet's balance equal
 
 **End-to-end smoke test** against the running dev stack (`docker compose up`): `bash scripts/smoke-auth.sh` exercises auth, ownership and one-credit processing through the real Kafka pipeline.
 
-<details>
-<summary><b>Legacy scenario scripts</b></summary>
-
-These predate the Vitest suites and run with `tsx` against a running stack. They are kept for reference and are not run in CI.
-
-| Command | Covers |
-|---|---|
-| `npm test` | Event create / read / history round trip |
-| `npm run test:phase3` / `test:phase4` / `test:phase5` | Outbox atomicity, producer publish, consumer idempotency |
-| `npx tsx tests/phase7.test.ts` | Retry engine, backoff and DLQ |
-| `npx tsx tests/phase9.test.ts` | Webhook signature acceptance and rejection |
-| `docker exec eventguard-backend npx tsx scripts/f3_payment_idempotency_test.ts` | `verify` + webhook convergence |
-| `docker exec eventguard-backend npx tsx scripts/f4_raw_body_webhook_test.ts` | HMAC over the original request bytes |
-
-</details>
-
 ## Observability
 
 | Signal | Where |

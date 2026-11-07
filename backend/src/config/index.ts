@@ -28,7 +28,7 @@ export const config = {
   kafka_partitions_concurrency: parseInt(process.env.KAFKA_PARTITIONS_CONCURRENCY || "3", 10),
   kafka_processing_concurrency: parseInt(process.env.KAFKA_PROCESSING_CONCURRENCY || "10", 10),
 
-  // Phase 5: Idempotency and Redis configuration
+  // Idempotency and Redis configuration
   redis_lock_ttl_seconds: parseInt(process.env.REDIS_LOCK_TTL_SECONDS || "30", 10),
   redis_completed_ttl_seconds: parseInt(
     process.env.REDIS_COMPLETED_TTL_SECONDS || "86400",
@@ -44,12 +44,12 @@ export const config = {
   // How long a claimed outbox batch is reserved for the publisher that claimed it
   outbox_lease_seconds: parseInt(process.env.OUTBOX_LEASE_SECONDS || "30", 10),
 
-  // Phase 6: Razorpay configuration
+  // Razorpay configuration
   razorpay_key_id: process.env.RAZORPAY_KEY_ID || "",
   razorpay_key_secret: process.env.RAZORPAY_KEY_SECRET || "",
   razorpay_webhook_secret: process.env.RAZORPAY_WEBHOOK_SECRET || "",
 
-  // Phase 7: Retry configuration
+  // Retry configuration
   max_event_attempts: parseInt(process.env.MAX_EVENT_ATTEMPTS || "3", 10),
   retry_base_delay_ms: parseInt(process.env.RETRY_BASE_DELAY_MS || "1000", 10),
   max_retry_delay_ms: parseInt(process.env.MAX_RETRY_DELAY_MS || "30000", 10),
@@ -60,15 +60,15 @@ export const config = {
   // The consumer process has no API; it serves /metrics and /health on this port
   consumer_metrics_port: parseInt(process.env.CONSUMER_METRICS_PORT || "9464", 10),
 
-  // Phase 7: Test configuration
+  // Test-only fault injection (refused at startup in production)
   fail_processing_for_event_id: process.env.FAIL_PROCESSING_FOR_EVENT_ID || "",
 
-  // Phase 10: Rate limiting
+  // Rate limiting
   rate_limit_window_ms: parseInt(process.env.RATE_LIMIT_WINDOW_MS || "60000", 10),
   rate_limit_max_requests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || "100", 10),
   webhook_rate_limit_max_requests: parseInt(process.env.WEBHOOK_RATE_LIMIT_MAX_REQUESTS || "600", 10),
 
-  // Phase 10: CORS
+  // CORS
   cors_origin: process.env.CORS_ORIGIN || "http://localhost:5173",
 
   // Authentication: HS256 JWT bearer tokens with a "user" or "admin" role

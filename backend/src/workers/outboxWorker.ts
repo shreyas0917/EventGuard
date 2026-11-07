@@ -10,7 +10,7 @@ export interface OutboxWorkerConfig {
 const defaultConfig: OutboxWorkerConfig = {
   intervalMs: parseInt(process.env.OUTBOX_POLL_INTERVAL_MS || "500", 10),
   batchSize: parseInt(process.env.OUTBOX_BATCH_SIZE || "50", 10),
-  enabled: true, // Enabled in Phase 4 with Kafka integration
+  enabled: true,
 };
 
 let isRunning = false;

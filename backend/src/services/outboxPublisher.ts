@@ -11,7 +11,7 @@ export interface OutboxPublisherConfig {
 
 const defaultConfig: OutboxPublisherConfig = {
   batchSize: 10,
-  enabled: true, // Enabled in Phase 4 when Kafka producer is integrated
+  enabled: true,
 };
 
 /** Failed rows back off before the next attempt: 1 s, 2 s, 4 s ... capped here. */

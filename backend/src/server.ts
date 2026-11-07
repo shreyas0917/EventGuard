@@ -20,7 +20,7 @@ async function startup() {
   try {
     logger.info("🚀 EventGuard API Starting...");
 
-    // Phase 10: Validate environment variables
+    // Validate environment variables
     enforceEnvironmentValidation();
     validateConfig();
     logger.info("✓ Configuration validated");
@@ -71,7 +71,7 @@ async function startup() {
     });
     logger.info("✓ Outbox worker started");
 
-    // Start retry worker for Phase 7
+    // Start retry/recovery worker
     startRetryWorker(config.retry_poll_interval_ms);
     logger.info("✓ Retry worker started");
 
@@ -88,7 +88,7 @@ async function startup() {
       logger.info(`📋 Readiness check: http://localhost:${config.backend_port}/health/ready`);
     });
 
-    // Phase 10: Setup graceful shutdown
+    // Setup graceful shutdown
     setupGracefulShutdown(server);
   } catch (error) {
     logger.error("❌ Startup failed", error);
