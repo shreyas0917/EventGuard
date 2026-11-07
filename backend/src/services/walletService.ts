@@ -3,16 +3,16 @@ import { prisma, TX_OPTIONS } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 
 export async function createWallet(userId: string): Promise<any> {
+  const existing = await prisma.wallet.findUnique({
+    where: { userId },
+  });
+
+  if (existing) {
+    logger.info(`[Wallet] Wallet already exists for user: ${userId}`);
+    return existing;
+  }
+
   try {
-    const existing = await prisma.wallet.findUnique({
-      where: { userId },
-    });
-
-    if (existing) {
-      logger.info(`[Wallet] Wallet already exists for user: ${userId}`);
-      return existing;
-    }
-
     const wallet = await prisma.wallet.create({
       data: {
         userId,
@@ -22,7 +22,13 @@ export async function createWallet(userId: string): Promise<any> {
 
     logger.info(`[Wallet] Created wallet for user: ${userId}`);
     return wallet;
-  } catch (error) {
+  } catch (error: any) {
+    // A concurrent request created it between the findUnique and the create: not an
+    // error, just return the existing wallet instead of a 500 from the UNIQUE violation.
+    if (error?.code === "P2002") {
+      logger.info(`[Wallet] Wallet created concurrently for user: ${userId}`);
+      return prisma.wallet.findUniqueOrThrow({ where: { userId } });
+    }
     logger.error(`[Wallet] Error creating wallet for ${userId}`, error);
     throw error;
   }

@@ -70,6 +70,16 @@ describe("HTTP ingress", () => {
     expect(await prisma.outboxEvent.count()).toBe(1);
   });
 
+  it("20 concurrent POST /api/wallets for one user: no 500, exactly one wallet", async () => {
+    const user = bearer(tokenFor("wallet_race_user", "user"));
+
+    const results = await db.concurrently(20, () => request(app).post("/api/wallets").set(user).send({}));
+    const statuses = results.map((r) => (r as PromiseFulfilledResult<request.Response>).value.status);
+
+    expect(statuses.every((s) => s === 201)).toBe(true);
+    expect(await prisma.wallet.count({ where: { userId: "wallet_race_user" } })).toBe(1);
+  });
+
   it("concurrent DLQ replays of one event: exactly one runs, the others get 409", async () => {
     await db.seedWallet("user_dlq");
     const message = await db.seedPaymentEvent("evt_dlq_race", "user_dlq", 75);
