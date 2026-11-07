@@ -29,6 +29,7 @@ const { connectRedis, closeRedis } = await import("../../src/lib/redis.js");
 const { prisma } = await import("../../src/lib/prisma.js");
 const { createApp } = await import("../../src/app.js");
 const { processEvent } = await import("../../src/kafka/eventWorker.js");
+const paymentService = await import("../../src/services/paymentService.js");
 const db = await import("../helpers/db.js");
 
 const app = createApp();
@@ -176,6 +177,31 @@ describe("webhook before verify with empty payment notes", () => {
     expect(await prisma.payment.count()).toBe(0);
     expect(await prisma.deadLetterEvent.count()).toBe(0);
     expect((await prisma.webhookEvent.findFirstOrThrow()).status).toBe("FAILED");
+  });
+});
+
+describe("webhook processing failure is retried", () => {
+  it("answers 500 and FAILs on a processing error, then 200 and one credit on resend", async () => {
+    const spy = vi
+      .spyOn(paymentService, "ensurePaymentSuccessEvent")
+      .mockRejectedValueOnce(new Error("transient DB error"));
+
+    const body = webhookBody("payment.captured", "pay_RETRY00001", "order_RETRY0001");
+
+    // First delivery fails during processing -> 500 so Razorpay will resend
+    const first = await sendWebhook(body, "evt_rzp_retry_1");
+    expect(first.status).toBe(500);
+    expect((await prisma.webhookEvent.findFirstOrThrow()).status).toBe("FAILED");
+    expect(await prisma.event.count()).toBe(0);
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    // Razorpay resends the same delivery id -> the real implementation runs this time
+    const second = await sendWebhook(body, "evt_rzp_retry_1");
+    expect(second.status).toBe(200);
+    expect((await prisma.webhookEvent.findFirstOrThrow()).status).toBe("PROCESSED");
+
+    await deliverEventAndExpectOneCredit("evt_pay_RETRY00001");
+    expect(await prisma.deadLetterEvent.count()).toBe(0);
   });
 });
 

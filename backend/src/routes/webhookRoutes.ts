@@ -213,6 +213,9 @@ async function handlePaymentCaptured(
       "FAILED",
       error instanceof Error ? error.message : "Unknown error"
     );
+    // Rethrow so the route answers 500: Razorpay only resends after a non-2xx, which
+    // lets verifyAndStoreWebhook reprocess the FAILED delivery on the next attempt.
+    throw error;
   }
 }
 
@@ -271,6 +274,8 @@ async function handlePaymentFailed(webhook: any, payload: any): Promise<void> {
       "FAILED",
       error instanceof Error ? error.message : "Unknown error"
     );
+    // Rethrow so the route answers 500 and Razorpay resends (see handlePaymentCaptured).
+    throw error;
   }
 }
 
